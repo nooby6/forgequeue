@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: forgequeue
+      POSTGRES_PASSWORD: forgequeue
+      POSTGRES_DB: forgequeue
+    ports:
+      - "5432:5432"
+    volumes:
+      - forgequeue-postgres:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+volumes:
+  forgequeue-postgres:
