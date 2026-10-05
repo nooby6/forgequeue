@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -36,7 +37,7 @@ func main() {
 	server := httpserver.New(cfg.Addr, &health.Handler{DB: db}, job.NewHandler(job.NewService(repo)), logger)
 
 	registry := worker.NewRegistry()
-	if err := registry.Register("noop", func(ctx context.Context, payload []byte) error {
+	if err := registry.Register("noop", func(ctx context.Context, payload json.RawMessage) error {
 		logger.Info("noop_job_processed", "payload", string(payload))
 		return nil
 	}); err != nil {
