@@ -15,6 +15,13 @@ jobs:
           POSTGRES_DB: forgequeue
         ports:
           - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U forgequeue -d forgequeue"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://forgequeue:forgequeue@localhost:5432/forgequeue
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
