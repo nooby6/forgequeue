@@ -45,6 +45,8 @@ Missing handlers and handler errors are surfaced and transition the job out of t
 
 ### 1. Lease expiry needs recovery semantics
 
+**Status: implemented in Milestone 4.**
+
 **Risk:** a worker can claim a job and then disappear before completing it. The database records `lease_expires_at`, but the current claim query only considers `status = 'pending'`.
 
 That means an expired `running` job cannot currently be reclaimed by another worker.
@@ -60,7 +62,9 @@ That means an expired `running` job cannot currently be reclaimed by another wor
 
 ### 2. Retry policy is not yet separated from failure handling
 
-The worker currently marks a handler error as `failed` immediately.
+**Status: implemented in Milestone 4.**
+
+The worker now routes handler errors through an explicit retry operation. Jobs retry until `max_attempts` is reached, using exponential backoff; exhausted jobs transition to `failed`.
 
 For a production queue, transient failures should normally be distinguishable from terminal failures.
 
@@ -90,7 +94,7 @@ A long-running handler can therefore continue executing after its ownership has 
 
 ### 4. Queue correctness should have integration coverage
 
-The current unit tests exercise worker behaviour, but the most important concurrency guarantees live in PostgreSQL.
+The current unit tests exercise worker behaviour. PostgreSQL concurrency guarantees remain a separate integration-test target and are now explicitly called out in CI configuration.
 
 **Recommended integration tests:**
 
