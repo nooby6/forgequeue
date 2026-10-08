@@ -35,6 +35,7 @@ This is deliberately more than a CRUD API. The project is being built from first
 - lease expiry recovery
 - automatic retries
 - exponential backoff
+- configurable per-job max attempts
 - maximum attempt policies
 - dead-letter queues
 - cancellation semantics
@@ -82,6 +83,7 @@ WORKER_QUEUE=default
 WORKER_CONCURRENCY=4
 WORKER_POLL_INTERVAL=500ms
 WORKER_LEASE=30s
+WORKER_RETRY_BACKOFF=1s
 
 The runtime currently includes a small noop handler so the system can be exercised without an external service.
 
@@ -107,7 +109,8 @@ See **[Code Review Notes](docs/CODE_REVIEW.md)**.
 ## Job lifecycle
 
 pending → running → succeeded
-                 ↘ failed
+                 ↘ pending → running → ...
+                    ↘ failed
 
 A running job is owned by a worker through locked_by and protected by a lease timestamp. Expired-lease recovery is deliberately reserved for Milestone 4 so the failure semantics can be implemented and tested properly.
 
