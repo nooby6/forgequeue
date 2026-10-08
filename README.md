@@ -87,6 +87,23 @@ The runtime currently includes a small noop handler so the system can be exercis
 
 The handler registry is intentionally separate from queue delivery: the queue decides which job should run, while the registry decides how that job type executes.
 
+## Code review
+
+Code review is treated as part of the engineering process, not just a style check.
+
+The repository includes a review of the queue and worker runtime covering:
+
+- PostgreSQL locking and concurrent job claiming
+- worker ownership
+- lease expiry and recovery
+- retry semantics
+- long-running handlers
+- failure modes
+- integration-test requirements
+- performance and operational concerns
+
+See **[Code Review Notes](docs/CODE_REVIEW.md)**.
+
 ## Job lifecycle
 
 pending → running → succeeded
@@ -132,13 +149,14 @@ The GitHub Actions workflow also runs the test suite against PostgreSQL.
 cmd/api/                 HTTP API and worker process
 internal/config/         environment configuration
 internal/database/       PostgreSQL connection pool
-internal/health/         liveness/readiness
+internal/health/          liveness/readiness
 internal/httpserver/     HTTP routing and middleware
 internal/job/            domain model, service and REST API
 internal/queue/          queue abstraction and PostgreSQL implementation
 internal/worker/         worker runtime and handler registry
 db/init/                 local database schema
 docs/adr/                architecture decisions
+docs/CODE_REVIEW.md      engineering review notes
 
 ## Engineering principles
 
