@@ -56,6 +56,7 @@ func main() {
 		Concurrency: cfg.WorkerConcurrency,
 		PollInterval: cfg.WorkerPollInterval,
 		Lease: cfg.WorkerLease,
+		RetryBackoff: cfg.WorkerRetryBackoff,
 		WorkerID: workerID,
 	})
 
