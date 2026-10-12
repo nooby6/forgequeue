@@ -67,8 +67,8 @@ func insertIntegrationJob(t *testing.T, pool *pgxpool.Pool, queueName string, at
     defer cancel()
     var id string
     err := pool.QueryRow(ctx, `
-        INSERT INTO jobs (queue_name, job_type, payload, attempts, max_attempts, status, available_at, locked_by, locked_at, lease_expires_at)
-        VALUES ($1, 'test', '{}', $2, $3, $4, NOW(), CASE WHEN $4 = 'running' THEN 'old-worker' ELSE NULL END, CASE WHEN $4 = 'running' THEN NOW() ELSE NULL END, $5)
+        INSERT INTO jobs (idempotency_key, queue_name, job_type, payload, attempts, max_attempts, status, available_at, locked_by, locked_at, lease_expires_at)
+        VALUES (gen_random_uuid()::text, $1, 'test', '{}', $2, $3, $4, NOW(), CASE WHEN $4 = 'running' THEN 'old-worker' ELSE NULL END, CASE WHEN $4 = 'running' THEN NOW() ELSE NULL END, $5)
         RETURNING id
     `, queueName, attempts, maxAttempts, status, lease).Scan(&id)
     if err != nil {
