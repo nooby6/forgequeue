@@ -67,9 +67,9 @@ func integrationPool(t *testing.T) *pgxpool.Pool {
 	t.Cleanup(pool.Close)
 
 	for _, path := range []string{
-		"db/migrations/000001_initial_schema.up.sql",
-		"db/migrations/000002_worker_leases.up.sql",
-		"db/migrations/000003_retries.up.sql",
+		"../../db/migrations/000001_initial_schema.up.sql",
+		"../../db/migrations/000002_worker_leases.up.sql",
+		"../../db/migrations/000003_retries.up.sql",
 	} {
 		sql, err := os.ReadFile(path)
 		if err != nil {
