@@ -185,3 +185,42 @@ func TestPostgresQueueRetryExhaustion(t *testing.T) {
         t.Fatalf("locked_by = %q, expected NULL", *lockedBy)
     }
 }
+
+
+func TestPostgresQueueRenewsLeaseOnlyForCurrentOwner(t *testing.T) {
+	pool := integrationPool(t)
+	queueName := fmt.Sprintf("renew-%d", time.Now().UnixNano())
+	insertIntegrationJob(t, pool, queueName, 0, 3, "pending", time.Time{})
+
+	q := NewPostgresQueue(pool)
+	j, err := q.ClaimNext(context.Background(), queueName, "current-worker", time.Minute)
+	if err != nil {
+		t.Fatalf("claim job: %v", err)
+	}
+
+	if err := q.RenewLease(context.Background(), j.ID, "stale-worker", time.Minute); err == nil {
+		t.Fatal("stale worker was allowed to renew the lease")
+	}
+	if err := q.RenewLease(context.Background(), j.ID, "current-worker", time.Minute); err != nil {
+		t.Fatalf("current owner could not renew lease: %v", err)
+	}
+
+	var leaseExpiresAt time.Time
+	if err := pool.QueryRow(context.Background(), "SELECT lease_expires_at FROM jobs WHERE id=$1", j.ID).Scan(&leaseExpiresAt); err != nil {
+		t.Fatalf("read renewed lease: %v", err)
+	}
+	if time.Until(leaseExpiresAt) < 50*time.Second {
+		t.Fatalf("renewed lease expires too soon: %s remaining", time.Until(leaseExpiresAt))
+	}
+}
+
+func TestPostgresQueueCannotRenewExpiredLease(t *testing.T) {
+	pool := integrationPool(t)
+	queueName := fmt.Sprintf("expired-renew-%d", time.Now().UnixNano())
+	id := insertIntegrationJob(t, pool, queueName, 1, 3, "running", time.Now().Add(-time.Minute))
+
+	q := NewPostgresQueue(pool)
+	if err := q.RenewLease(context.Background(), id, "old-worker", time.Minute); err == nil {
+		t.Fatal("worker was allowed to revive an expired lease")
+	}
+}
