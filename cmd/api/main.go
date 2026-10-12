@@ -52,15 +52,18 @@ func main() {
 
 	queueRuntime := queue.NewPostgresQueue(db)
 	jobWorker := worker.New(queueRuntime, registry, logger, worker.Config{
-		QueueName: cfg.WorkerQueue,
-		Concurrency: cfg.WorkerConcurrency,
-		PollInterval: cfg.WorkerPollInterval,
-		Lease: cfg.WorkerLease,
-		RetryBackoff: cfg.WorkerRetryBackoff,
-		WorkerID: workerID,
+		QueueName:       cfg.WorkerQueue,
+		Concurrency:     cfg.WorkerConcurrency,
+		PollInterval:    cfg.WorkerPollInterval,
+		Lease:           cfg.WorkerLease,
+		RetryBackoff:    cfg.WorkerRetryBackoff,
+		ShutdownTimeout: cfg.WorkerShutdownTimeout,
+		WorkerID:        workerID,
 	})
 
+	workerDone := make(chan struct{})
 	go func() {
+		defer close(workerDone)
 		logger.Info("worker_started", "worker_id", workerID, "queue", cfg.WorkerQueue, "concurrency", cfg.WorkerConcurrency)
 		jobWorker.Run(ctx)
 		logger.Info("worker_stopped", "worker_id", workerID)
@@ -78,5 +81,15 @@ func main() {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = server.Shutdown(shutdownCtx)
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		logger.Error("server_shutdown_failed", "error", err)
+	}
+
+	// Run applies its own bounded grace period to active jobs. Wait for it
+	// before closing the shared database pool.
+	select {
+	case <-workerDone:
+	case <-time.After(cfg.WorkerShutdownTimeout + time.Second):
+		logger.Error("worker_shutdown_timeout", "timeout", cfg.WorkerShutdownTimeout)
+	}
 }
