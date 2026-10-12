@@ -8,57 +8,78 @@ import (
     "testing"
     "time"
 
-    "github.com/jackc/pgx/v5/pgxpool"
+    "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func integrationPool(t *testing.T) *pgxpool.Pool {
-    t.Helper()
-    dsn := os.Getenv("TEST_DATABASE_URL")
-    if dsn == "" {
-        t.Skip("TEST_DATABASE_URL is not set")
-    }
-    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-    defer cancel()
-    pool, err := pgxpool.New(ctx, dsn)
-    if err != nil {
-        t.Fatalf("create pool: %v", err)
-    }
-    if err := pool.Ping(ctx); err != nil {
-        pool.Close()
-        t.Fatalf("ping database: %v", err)
-    }
-    t.Cleanup(pool.Close)
-    return pool
-}
+	t.Helper()
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-func resetIntegrationJobs(t *testing.T, pool *pgxpool.Pool) {
-    t.Helper()
-    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-    defer cancel()
-    _, err := pool.Exec(ctx, `
-        CREATE EXTENSION IF NOT EXISTS pgcrypto;
-        CREATE TABLE IF NOT EXISTS jobs (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            idempotency_key TEXT UNIQUE,
-            queue_name TEXT NOT NULL,
-            job_type TEXT NOT NULL,
-            payload JSONB NOT NULL,
-            status TEXT NOT NULL CHECK (status IN ('pending','running','succeeded','failed','cancelled')),
-            priority INTEGER NOT NULL DEFAULT 0,
-            attempts INTEGER NOT NULL DEFAULT 0,
-            max_attempts INTEGER NOT NULL DEFAULT 3 CHECK (max_attempts BETWEEN 1 AND 20),
-            available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            locked_by TEXT,
-            locked_at TIMESTAMPTZ,
-            lease_expires_at TIMESTAMPTZ,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-        TRUNCATE jobs;
-    `)
-    if err != nil {
-        t.Fatalf("prepare jobs table: %v", err)
-    }
+	schema := fmt.Sprintf("forgequeue_test_%d", time.Now().UnixNano())
+	admin, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect to database for test schema: %v", err)
+	}
+	if _, err := admin.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public"); err != nil {
+		admin.Close(ctx)
+		t.Fatalf("ensure pgcrypto extension: %v", err)
+	}
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		admin.Close(ctx)
+		t.Fatalf("create isolated schema: %v", err)
+	}
+	if err := admin.Close(ctx); err != nil {
+		t.Fatalf("close setup connection: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		cleanupConn, err := pgx.Connect(cleanupCtx, dsn)
+		if err != nil {
+			t.Errorf("connect to drop test schema %s: %v", schema, err)
+			return
+		}
+		defer cleanupConn.Close(cleanupCtx)
+		if _, err := cleanupConn.Exec(cleanupCtx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE"); err != nil {
+			t.Errorf("drop test schema %s: %v", schema, err)
+		}
+	})
+
+	config, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse database config: %v", err)
+	}
+	config.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		t.Fatalf("ping database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	for _, path := range []string{
+		"db/migrations/000001_initial_schema.up.sql",
+		"db/migrations/000002_worker_leases.up.sql",
+		"db/migrations/000003_retries.up.sql",
+	} {
+		sql, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", path, err)
+		}
+		if _, err := pool.Exec(ctx, string(sql)); err != nil {
+			t.Fatalf("apply migration %s: %v", path, err)
+		}
+	}
+	return pool
 }
 
 func insertIntegrationJob(t *testing.T, pool *pgxpool.Pool, queueName string, attempts, maxAttempts int, status string, lease time.Time) string {
@@ -79,7 +100,6 @@ func insertIntegrationJob(t *testing.T, pool *pgxpool.Pool, queueName string, at
 
 func TestPostgresQueueConcurrentClaim(t *testing.T) {
     pool := integrationPool(t)
-    resetIntegrationJobs(t, pool)
     ctx := context.Background()
     queueName := fmt.Sprintf("integration-%d", time.Now().UnixNano())
     for i := 0; i < 8; i++ {
@@ -125,7 +145,6 @@ func TestPostgresQueueConcurrentClaim(t *testing.T) {
 
 func TestPostgresQueueRecoversExpiredLease(t *testing.T) {
     pool := integrationPool(t)
-    resetIntegrationJobs(t, pool)
     queueName := fmt.Sprintf("lease-%d", time.Now().UnixNano())
     id := insertIntegrationJob(t, pool, queueName, 1, 3, "running", time.Now().Add(-time.Minute))
 
@@ -147,7 +166,6 @@ func TestPostgresQueueRecoversExpiredLease(t *testing.T) {
 
 func TestPostgresQueueRetryExhaustion(t *testing.T) {
     pool := integrationPool(t)
-    resetIntegrationJobs(t, pool)
     queueName := fmt.Sprintf("retry-%d", time.Now().UnixNano())
     id := insertIntegrationJob(t, pool, queueName, 3, 3, "running", time.Now().Add(time.Minute))
 
