@@ -1,7 +1,13 @@
 bin/
 *.test
 coverage.out
+
+# Local environment files. Keep only the committed template.
 .env
+.env.*
+!.env.example
+
+# Local IDE and OS files
 .idea/
 .vscode/
 .DS_Store
