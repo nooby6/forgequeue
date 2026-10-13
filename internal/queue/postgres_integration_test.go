@@ -224,3 +224,35 @@ func TestPostgresQueueCannotRenewExpiredLease(t *testing.T) {
 		t.Fatal("worker was allowed to revive an expired lease")
 	}
 }
+
+
+func TestPostgresQueueRejectsTransitionsAfterLeaseExpiry(t *testing.T) {
+	pool := integrationPool(t)
+	q := NewPostgresQueue(pool)
+
+	for _, operation := range []struct {
+		name string
+		run  func(string) error
+	}{
+		{name: "complete", run: func(id string) error { return q.Complete(context.Background(), id, "old-worker") }},
+		{name: "fail", run: func(id string) error { return q.Fail(context.Background(), id, "old-worker") }},
+		{name: "retry", run: func(id string) error { return q.Retry(context.Background(), id, "old-worker", time.Second) }},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			queueName := fmt.Sprintf("expired-transition-%s-%d", operation.name, time.Now().UnixNano())
+			id := insertIntegrationJob(t, pool, queueName, 1, 3, "running", time.Now().Add(-time.Minute))
+
+			if err := operation.run(id); err == nil {
+				t.Fatalf("%s succeeded after the lease expired", operation.name)
+			}
+
+			var status string
+			if err := pool.QueryRow(context.Background(), "SELECT status FROM jobs WHERE id=$1", id).Scan(&status); err != nil {
+				t.Fatalf("read job status: %v", err)
+			}
+			if status != "running" {
+				t.Fatalf("status = %q, expected expired job to remain running until recovery", status)
+			}
+		})
+	}
+}
