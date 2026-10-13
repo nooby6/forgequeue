@@ -72,7 +72,7 @@ func (q *PostgresQueue) RenewLease(ctx context.Context, id, workerID string, lea
 }
 
 func (q *PostgresQueue) Complete(ctx context.Context, id, workerID string) error {
-	tag, err := q.db.Exec(ctx, "UPDATE jobs SET status='succeeded',locked_by=NULL,locked_at=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE id=$1 AND status='running' AND locked_by=$2", id, workerID)
+	tag, err := q.db.Exec(ctx, "UPDATE jobs SET status='succeeded',locked_by=NULL,locked_at=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE id=$1 AND status='running' AND locked_by=$2 AND lease_expires_at>NOW()", id, workerID)
 	if err != nil {
 		return fmt.Errorf("complete job: %w", err)
 	}
@@ -83,7 +83,7 @@ func (q *PostgresQueue) Complete(ctx context.Context, id, workerID string) error
 }
 
 func (q *PostgresQueue) Fail(ctx context.Context, id, workerID string) error {
-	tag, err := q.db.Exec(ctx, "UPDATE jobs SET status='failed',locked_by=NULL,locked_at=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE id=$1 AND status='running' AND locked_by=$2", id, workerID)
+	tag, err := q.db.Exec(ctx, "UPDATE jobs SET status='failed',locked_by=NULL,locked_at=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE id=$1 AND status='running' AND locked_by=$2 AND lease_expires_at>NOW()", id, workerID)
 	if err != nil {
 		return fmt.Errorf("fail job: %w", err)
 	}
@@ -94,7 +94,7 @@ func (q *PostgresQueue) Fail(ctx context.Context, id, workerID string) error {
 }
 
 func (q *PostgresQueue) Retry(ctx context.Context, id, workerID string, delay time.Duration) error {
-	tag, err := q.db.Exec(ctx, "UPDATE jobs SET status=CASE WHEN attempts < max_attempts THEN 'pending' ELSE 'failed' END,available_at=CASE WHEN attempts < max_attempts THEN NOW()+$3::interval ELSE available_at END,locked_by=NULL,locked_at=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE id=$1 AND status='running' AND locked_by=$2", id, workerID, delay.String())
+	tag, err := q.db.Exec(ctx, "UPDATE jobs SET status=CASE WHEN attempts < max_attempts THEN 'pending' ELSE 'failed' END,available_at=CASE WHEN attempts < max_attempts THEN NOW()+$3::interval ELSE available_at END,locked_by=NULL,locked_at=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE id=$1 AND status='running' AND locked_by=$2 AND lease_expires_at>NOW()", id, workerID, delay.String())
 	if err != nil {
 		return fmt.Errorf("retry job: %w", err)
 	}
