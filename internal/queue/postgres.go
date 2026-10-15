@@ -46,6 +46,9 @@ func (q *PostgresQueue) ClaimNext(ctx context.Context, queueName, workerID strin
 	var id string
 	err = tx.QueryRow(ctx, "SELECT id FROM jobs WHERE queue_name=$1 AND status='pending' AND available_at<=NOW() ORDER BY priority DESC,available_at ASC,created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1", queueName).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
+		if err := tx.Commit(ctx); err != nil {
+			return job.Job{}, fmt.Errorf("commit lease recovery: %w", err)
+		}
 		return job.Job{}, ErrNoJob
 	}
 	if err != nil {
