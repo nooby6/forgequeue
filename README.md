@@ -34,13 +34,13 @@ This is deliberately more than a CRUD API. The project is being built from first
 - Per-job maximum attempts; exhausted jobs transition to `failed`
 - Lease renewal for long-running handlers (PR in review)
 - Completion, failure and retry operations require an active, unexpired lease (PR in review)
+- Repeated successful completion acknowledgements are idempotent (PR in review)
 
 ### Remaining work
 
 **Milestone 4 — Reliability**
 - Dedicated dead-letter handling and inspection/replay policy
 - Explicit cancellation semantics
-- Idempotent completion semantics and tests
 - Failure-injection coverage for database outages and worker restarts
 
 **Milestone 5 — Scheduling**
