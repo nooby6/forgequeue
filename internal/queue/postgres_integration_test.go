@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func integrationPool(t *testing.T) *pgxpool.Pool {
+func integrationPool(t testing.TB) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
@@ -70,6 +70,7 @@ func integrationPool(t *testing.T) *pgxpool.Pool {
 		"../../db/migrations/000001_initial_schema.up.sql",
 		"../../db/migrations/000002_worker_leases.up.sql",
 		"../../db/migrations/000003_retries.up.sql",
+		"../../db/migrations/000004_dead_letter_jobs.up.sql",
 	} {
 		sql, err := os.ReadFile(path)
 		if err != nil {
@@ -82,7 +83,7 @@ func integrationPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-func insertIntegrationJob(t *testing.T, pool *pgxpool.Pool, queueName string, attempts, maxAttempts int, status string, lease time.Time) string {
+func insertIntegrationJob(t testing.TB, pool *pgxpool.Pool, queueName string, attempts, maxAttempts int, status string, lease time.Time) string {
     t.Helper()
     ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
     defer cancel()
@@ -184,4 +185,169 @@ func TestPostgresQueueRetryExhaustion(t *testing.T) {
     if lockedBy != nil {
         t.Fatalf("locked_by = %q, expected NULL", *lockedBy)
     }
+}
+
+
+func TestPostgresQueueRenewsLeaseOnlyForCurrentOwner(t *testing.T) {
+	pool := integrationPool(t)
+	queueName := fmt.Sprintf("renew-%d", time.Now().UnixNano())
+	insertIntegrationJob(t, pool, queueName, 0, 3, "pending", time.Time{})
+
+	q := NewPostgresQueue(pool)
+	j, err := q.ClaimNext(context.Background(), queueName, "current-worker", time.Minute)
+	if err != nil {
+		t.Fatalf("claim job: %v", err)
+	}
+
+	if err := q.RenewLease(context.Background(), j.ID, "stale-worker", time.Minute); err == nil {
+		t.Fatal("stale worker was allowed to renew the lease")
+	}
+	if err := q.RenewLease(context.Background(), j.ID, "current-worker", time.Minute); err != nil {
+		t.Fatalf("current owner could not renew lease: %v", err)
+	}
+
+	var leaseExpiresAt time.Time
+	if err := pool.QueryRow(context.Background(), "SELECT lease_expires_at FROM jobs WHERE id=$1", j.ID).Scan(&leaseExpiresAt); err != nil {
+		t.Fatalf("read renewed lease: %v", err)
+	}
+	if time.Until(leaseExpiresAt) < 50*time.Second {
+		t.Fatalf("renewed lease expires too soon: %s remaining", time.Until(leaseExpiresAt))
+	}
+}
+
+func TestPostgresQueueCannotRenewExpiredLease(t *testing.T) {
+	pool := integrationPool(t)
+	queueName := fmt.Sprintf("expired-renew-%d", time.Now().UnixNano())
+	id := insertIntegrationJob(t, pool, queueName, 1, 3, "running", time.Now().Add(-time.Minute))
+
+	q := NewPostgresQueue(pool)
+	if err := q.RenewLease(context.Background(), id, "old-worker", time.Minute); err == nil {
+		t.Fatal("worker was allowed to revive an expired lease")
+	}
+}
+
+
+func TestPostgresQueueRejectsTransitionsAfterLeaseExpiry(t *testing.T) {
+	pool := integrationPool(t)
+	q := NewPostgresQueue(pool)
+
+	for _, operation := range []struct {
+		name string
+		run  func(string) error
+	}{
+		{name: "complete", run: func(id string) error { return q.Complete(context.Background(), id, "old-worker") }},
+		{name: "fail", run: func(id string) error { return q.Fail(context.Background(), id, "old-worker") }},
+		{name: "retry", run: func(id string) error { return q.Retry(context.Background(), id, "old-worker", time.Second) }},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			queueName := fmt.Sprintf("expired-transition-%s-%d", operation.name, time.Now().UnixNano())
+			id := insertIntegrationJob(t, pool, queueName, 1, 3, "running", time.Now().Add(-time.Minute))
+
+			if err := operation.run(id); err == nil {
+				t.Fatalf("%s succeeded after the lease expired", operation.name)
+			}
+
+			var status string
+			if err := pool.QueryRow(context.Background(), "SELECT status FROM jobs WHERE id=$1", id).Scan(&status); err != nil {
+				t.Fatalf("read job status: %v", err)
+			}
+			if status != "running" {
+				t.Fatalf("status = %q, expected expired job to remain running until recovery", status)
+			}
+		})
+	}
+}
+
+func TestPostgresQueueCompleteIsIdempotent(t *testing.T) {
+	pool := integrationPool(t)
+	queueName := fmt.Sprintf("idempotent-complete-%d", time.Now().UnixNano())
+	insertIntegrationJob(t, pool, queueName, 0, 3, "pending", time.Time{})
+
+	q := NewPostgresQueue(pool)
+	j, err := q.ClaimNext(context.Background(), queueName, "worker-a", time.Minute)
+	if err != nil {
+		t.Fatalf("claim job: %v", err)
+	}
+	if err := q.Complete(context.Background(), j.ID, "worker-a"); err != nil {
+		t.Fatalf("first completion: %v", err)
+	}
+	if err := q.Complete(context.Background(), j.ID, "worker-a"); err != nil {
+		t.Fatalf("repeated completion should be idempotent: %v", err)
+	}
+}
+
+
+func TestPostgresQueueDeadLetterCanBeInspectedAndReplayed(t *testing.T) {
+	pool := integrationPool(t)
+	queueName := fmt.Sprintf("dead-letter-%d", time.Now().UnixNano())
+	id := insertIntegrationJob(t, pool, queueName, 3, 3, "running", time.Now().Add(time.Minute))
+	q := NewPostgresQueue(pool)
+
+	if err := q.Retry(context.Background(), id, "old-worker", time.Second); err != nil {
+		t.Fatalf("exhausted retry: %v", err)
+	}
+	letters, err := q.ListDeadLetters(context.Background(), queueName, 10)
+	if err != nil {
+		t.Fatalf("list dead letters: %v", err)
+	}
+	if len(letters) != 1 {
+		t.Fatalf("dead letters = %d, expected 1", len(letters))
+	}
+	if letters[0].JobID != id || letters[0].Attempts != 3 {
+		t.Fatalf("unexpected dead letter: %+v", letters[0])
+	}
+	if letters[0].FailureReason != "maximum attempts exhausted after 3 attempts" {
+		t.Fatalf("unexpected failure reason: %q", letters[0].FailureReason)
+	}
+
+	if err := q.ReplayDeadLetter(context.Background(), id); err != nil {
+		t.Fatalf("replay dead letter: %v", err)
+	}
+	var status string
+	var attempts int
+	if err := pool.QueryRow(context.Background(), "SELECT status,attempts FROM jobs WHERE id=$1", id).Scan(&status, &attempts); err != nil {
+		t.Fatalf("read replayed job: %v", err)
+	}
+	if status != "pending" || attempts != 0 {
+		t.Fatalf("replayed job status=%q attempts=%d, expected pending/0", status, attempts)
+	}
+	letters, err = q.ListDeadLetters(context.Background(), queueName, 10)
+	if err != nil {
+		t.Fatalf("list active dead letters after replay: %v", err)
+	}
+	if len(letters) != 0 {
+		t.Fatalf("active dead letters after replay = %d, expected 0", len(letters))
+	}
+	if err := q.ReplayDeadLetter(context.Background(), id); err == nil {
+		t.Fatal("replayed the same dead-letter record twice")
+	}
+}
+
+
+func TestPostgresQueueDeadLettersExpiredLeaseAfterMaximumAttempts(t *testing.T) {
+	pool := integrationPool(t)
+	queueName := fmt.Sprintf("expired-exhausted-%d", time.Now().UnixNano())
+	id := insertIntegrationJob(t, pool, queueName, 3, 3, "running", time.Now().Add(-time.Minute))
+	q := NewPostgresQueue(pool)
+
+	if _, err := q.ClaimNext(context.Background(), queueName, "replacement-worker", time.Minute); err != ErrNoJob {
+		t.Fatalf("claim result = %v, expected no claim for exhausted expired job", err)
+	}
+	var status string
+	if err := pool.QueryRow(context.Background(), "SELECT status FROM jobs WHERE id=$1", id).Scan(&status); err != nil {
+		t.Fatalf("read exhausted job status: %v", err)
+	}
+	if status != "failed" {
+		t.Fatalf("status = %q, expected failed", status)
+	}
+	letters, err := q.ListDeadLetters(context.Background(), queueName, 10)
+	if err != nil {
+		t.Fatalf("list dead letters: %v", err)
+	}
+	if len(letters) != 1 || letters[0].JobID != id {
+		t.Fatalf("dead letters = %+v, expected one record for %s", letters, id)
+	}
+	if letters[0].FailureReason != "lease expired after maximum attempts" {
+		t.Fatalf("failure reason = %q", letters[0].FailureReason)
+	}
 }

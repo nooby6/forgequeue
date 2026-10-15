@@ -3,21 +3,23 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/nooby6/forgequeue/internal/job"
 	"github.com/nooby6/forgequeue/internal/queue"
 )
 
 type Config struct {
-	QueueName      string
-	Concurrency    int
-	PollInterval   time.Duration
-	Lease          time.Duration
-	RetryBackoff   time.Duration
+	QueueName       string
+	Concurrency     int
+	PollInterval    time.Duration
+	Lease           time.Duration
+	RetryBackoff    time.Duration
 	ShutdownTimeout time.Duration
-	WorkerID       string
+	WorkerID        string
 }
 
 type Worker struct {
@@ -132,15 +134,32 @@ func (w *Worker) processOne(ctx, workCtx context.Context) error {
 		return nil
 	}
 
-	if err = h(workCtx, json.RawMessage(j.Payload)); err != nil {
+	handlerCtx, cancelHandler := context.WithCancel(workCtx)
+	leaseLost := make(chan error, 1)
+	stopRenewal := make(chan struct{})
+	renewalDone := make(chan struct{})
+	go w.renewLeaseUntilStopped(j, handlerCtx, cancelHandler, stopRenewal, renewalDone, leaseLost)
+
+	handlerErr := h(handlerCtx, json.RawMessage(j.Payload))
+	close(stopRenewal)
+	<-renewalDone
+	cancelHandler()
+
+	select {
+	case renewErr := <-leaseLost:
+		return fmt.Errorf("job %s lease renewal failed: %w", j.ID, renewErr)
+	default:
+	}
+
+	if handlerErr != nil {
 		if ctx.Err() != nil || workCtx.Err() != nil {
-			return err
+			return handlerErr
 		}
 		delay := w.retryDelay(j.Attempts)
 		if e := w.queue.Retry(workCtx, j.ID, w.config.WorkerID, delay); e != nil {
 			return e
 		}
-		w.logger.Error("job_failed", "job_id", j.ID, "job_type", j.JobType, "attempt", j.Attempts, "retry_delay", delay.String(), "error", err)
+		w.logger.Error("job_failed", "job_id", j.ID, "job_type", j.JobType, "attempt", j.Attempts, "retry_delay", delay.String(), "error", handlerErr)
 		return nil
 	}
 
@@ -149,6 +168,35 @@ func (w *Worker) processOne(ctx, workCtx context.Context) error {
 	}
 	w.logger.Info("job_completed", "job_id", j.ID, "job_type", j.JobType, "worker_id", w.config.WorkerID)
 	return nil
+}
+
+func (w *Worker) renewLeaseUntilStopped(j job.Job, handlerCtx context.Context, cancelHandler context.CancelFunc, stop <-chan struct{}, done chan<- struct{}, leaseLost chan<- error) {
+	defer close(done)
+	interval := w.config.Lease / 3
+	if interval <= 0 {
+		interval = time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			renewCtx, cancel := context.WithTimeout(context.Background(), interval)
+			err := w.queue.RenewLease(renewCtx, j.ID, w.config.WorkerID, w.config.Lease)
+			cancel()
+			if err != nil {
+				select {
+				case leaseLost <- err:
+				default:
+				}
+				cancelHandler()
+				return
+			}
+		}
+	}
 }
 
 func (w *Worker) retryDelay(attempt int) time.Duration {

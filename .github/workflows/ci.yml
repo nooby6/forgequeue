@@ -29,3 +29,17 @@ jobs:
           go-version: '1.23'
       - run: go mod tidy
       - run: go test ./...
+      - name: Benchmark PostgreSQL claim throughput
+        shell: bash
+        run: |
+          set -o pipefail
+          go test ./internal/queue -run '^$' -bench '^BenchmarkPostgresQueueClaimNext$' -benchmem -benchtime=1s -cpu=1,4,16 | tee /tmp/forgequeue-benchmark.txt
+          {
+            echo '### PostgreSQL job-claim benchmark'
+            echo
+            echo 'CI-host measurements; these are a comparative baseline, not a production capacity guarantee.'
+            echo
+            echo '| GOMAXPROCS | Jobs/sec | ns/op |'
+            echo '|---:|---:|---:|'
+            awk '$1 ~ /^BenchmarkPostgresQueueClaimNext-/ && $4 == "ns/op" { split($1, parts, "-"); rate = 1000000000 / $3; printf "| %s | %.1f | %.0f |\n", parts[2], rate, $3 }' /tmp/forgequeue-benchmark.txt
+          } >> "$GITHUB_STEP_SUMMARY"

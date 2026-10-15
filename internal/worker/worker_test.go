@@ -21,8 +21,11 @@ type fakeQueue struct {
 	completed  int
 	failed     int
 	retried    int
+	renewals   int
 	retryDelay time.Duration
+	renewErr   error
 	onRetry    func()
+	onRenew    func()
 }
 
 func (f *fakeQueue) ClaimNext(context.Context, string, string, time.Duration) (job.Job, error) {
@@ -34,6 +37,18 @@ func (f *fakeQueue) ClaimNext(context.Context, string, string, time.Duration) (j
 	}
 	f.claimed = true
 	return f.job, nil
+}
+
+func (f *fakeQueue) RenewLease(context.Context, string, string, time.Duration) error {
+	f.mu.Lock()
+	f.renewals++
+	onRenew := f.onRenew
+	err := f.renewErr
+	f.mu.Unlock()
+	if onRenew != nil {
+		onRenew()
+	}
+	return err
 }
 
 func (f *fakeQueue) Complete(context.Context, string, string) error {
@@ -201,6 +216,87 @@ func TestWorkerCancelsHandlerAfterShutdownTimeout(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("worker did not cancel handler after the shutdown timeout")
+	}
+}
+
+func TestWorkerRenewsLeaseForLongRunningHandler(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	renewed := make(chan struct{}, 4)
+	fq := &fakeQueue{
+		job:     job.Job{ID: "job-long", JobType: "long", Payload: json.RawMessage("{}")},
+		onRenew: func() { select { case renewed <- struct{}{}: default: } },
+	}
+	reg := NewRegistry()
+	if err := reg.Register("long", func(context.Context, json.RawMessage) error {
+		for i := 0; i < 2; i++ {
+			select {
+			case <-renewed:
+			case <-time.After(time.Second):
+				return errors.New("timed out waiting for lease renewal")
+			}
+		}
+		cancel()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w := New(fq, reg, slog.Default(), Config{
+		QueueName: "default", Concurrency: 1, PollInterval: time.Millisecond,
+		Lease: 90 * time.Millisecond, ShutdownTimeout: time.Second, WorkerID: "test-worker",
+	})
+	w.Run(ctx)
+
+	fq.mu.Lock()
+	defer fq.mu.Unlock()
+	if fq.renewals < 2 {
+		t.Fatalf("expected at least 2 lease renewals, got %d", fq.renewals)
+	}
+	if fq.completed != 1 {
+		t.Fatalf("expected job to complete after renewals, got %d completions", fq.completed)
+	}
+}
+
+func TestWorkerStopsHandlerWhenLeaseRenewalFails(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	fq := &fakeQueue{
+		job: job.Job{ID: "job-lost", JobType: "long", Payload: json.RawMessage("{}")},
+		renewErr: errors.New("ownership lost"),
+	}
+	reg := NewRegistry()
+	started := make(chan struct{})
+	if err := reg.Register("long", func(ctx context.Context, _ json.RawMessage) error {
+		close(started)
+		<-ctx.Done()
+		cancel()
+		return ctx.Err()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w := New(fq, reg, slog.Default(), Config{
+		QueueName: "default", Concurrency: 1, PollInterval: time.Millisecond,
+		Lease: 30 * time.Millisecond, ShutdownTimeout: time.Second, WorkerID: "test-worker",
+	})
+	done := make(chan struct{})
+	go func() { w.Run(ctx); close(done) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not start")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not stop after lease renewal failed")
+	}
+
+	fq.mu.Lock()
+	defer fq.mu.Unlock()
+	if fq.completed != 0 {
+		t.Fatalf("job must not complete after lease loss, got %d completions", fq.completed)
+	}
+	if fq.retried != 0 {
+		t.Fatalf("job must not be retried by a worker that lost ownership, got %d retries", fq.retried)
 	}
 }
 
