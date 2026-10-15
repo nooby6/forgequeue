@@ -35,7 +35,7 @@ Workers claim jobs in a database transaction. PostgreSQL row locking prevents tw
 
 - Jobs are selected by queue, readiness time, and priority.
 - Each claim increments the attempt count.
-- Expired running jobs are recovered when a worker next claims from that queue.
+- Expired running jobs are recovered when a worker next claims from that queue; if the expired job has exhausted its attempts, it is marked failed and recorded as a dead letter instead of being run again.
 - Failed handlers are retried with capped exponential backoff until `max_attempts` is reached.
 - Exhausted jobs become `failed` and are recorded in `dead_letter_jobs` in the same transaction.
 - `ListDeadLetters` lists unreplayed failures; `ReplayDeadLetter` requeues one job, resets its attempt counter, and retains the audit record. If it exhausts attempts again, the existing record is refreshed.
