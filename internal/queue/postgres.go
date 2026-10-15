@@ -34,9 +34,13 @@ func (q *PostgresQueue) ClaimNext(ctx context.Context, queueName, workerID strin
 	}
 	defer tx.Rollback(ctx)
 
-	_, err = tx.Exec(ctx, "UPDATE jobs SET status='pending',locked_by=NULL,locked_at=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE queue_name=$1 AND status='running' AND lease_expires_at<=NOW()", queueName)
+	_, err = tx.Exec(ctx, "UPDATE jobs SET status='pending',locked_by=NULL,locked_at=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE queue_name=$1 AND status='running' AND lease_expires_at<=NOW() AND attempts<max_attempts", queueName)
 	if err != nil {
 		return job.Job{}, fmt.Errorf("recover expired jobs: %w", err)
+	}
+	_, err = tx.Exec(ctx, "WITH exhausted AS (UPDATE jobs SET status='failed',locked_by=NULL,locked_at=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE queue_name=$1 AND status='running' AND lease_expires_at<=NOW() AND attempts>=max_attempts RETURNING id,queue_name,job_type,payload,attempts,max_attempts) INSERT INTO dead_letter_jobs (job_id,queue_name,job_type,payload,attempts,max_attempts,failure_reason,failed_at,replayed_at) SELECT id,queue_name,job_type,payload,attempts,max_attempts,'lease expired after maximum attempts',NOW(),NULL FROM exhausted ON CONFLICT (job_id) DO UPDATE SET queue_name=EXCLUDED.queue_name,job_type=EXCLUDED.job_type,payload=EXCLUDED.payload,attempts=EXCLUDED.attempts,max_attempts=EXCLUDED.max_attempts,failure_reason=EXCLUDED.failure_reason,failed_at=NOW(),replayed_at=NULL", queueName)
+	if err != nil {
+		return job.Job{}, fmt.Errorf("dead-letter expired jobs: %w", err)
 	}
 
 	var id string
