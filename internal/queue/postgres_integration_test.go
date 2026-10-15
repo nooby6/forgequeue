@@ -256,3 +256,21 @@ func TestPostgresQueueRejectsTransitionsAfterLeaseExpiry(t *testing.T) {
 		})
 	}
 }
+
+func TestPostgresQueueCompleteIsIdempotent(t *testing.T) {
+	pool := integrationPool(t)
+	queueName := fmt.Sprintf("idempotent-complete-%d", time.Now().UnixNano())
+	insertIntegrationJob(t, pool, queueName, 0, 3, "pending", time.Time{})
+
+	q := NewPostgresQueue(pool)
+	j, err := q.ClaimNext(context.Background(), queueName, "worker-a", time.Minute)
+	if err != nil {
+		t.Fatalf("claim job: %v", err)
+	}
+	if err := q.Complete(context.Background(), j.ID, "worker-a"); err != nil {
+		t.Fatalf("first completion: %v", err)
+	}
+	if err := q.Complete(context.Background(), j.ID, "worker-a"); err != nil {
+		t.Fatalf("repeated completion should be idempotent: %v", err)
+	}
+}
