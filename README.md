@@ -149,6 +149,84 @@ go test ./...
 
 The GitHub Actions workflow also runs the test suite against PostgreSQL.
 
+## Benchmarking
+
+A PostgreSQL-backed claim-throughput benchmark is available. Point `TEST_DATABASE_URL` at a disposable PostgreSQL database and run:
+
+```sh
+go test ./internal/queue -run '^
+
+cmd/api/                 HTTP API and worker process
+internal/config/         environment configuration
+internal/database/       PostgreSQL connection pool
+internal/health/          liveness/readiness
+internal/httpserver/     HTTP routing and middleware
+internal/job/            domain model, service and REST API
+internal/queue/          queue abstraction and PostgreSQL implementation
+internal/worker/         worker runtime and handler registry
+db/init/                 local database schema
+docs/adr/                architecture decisions
+docs/CODE_REVIEW.md      engineering review notes
+
+## Engineering principles
+
+1. Durability before throughput — establish correct state transitions before optimising delivery.
+2. Database semantics should be explicit — queue behaviour uses PostgreSQL primitives rather than hiding delivery behind a framework.
+3. Workers must have ownership — a worker must prove that it owns a running job before acknowledging it.
+4. Concurrency should be testable — queue and execution behaviour are isolated behind interfaces.
+5. Failure is part of the design — retries, leases, dead letters and recovery are core system behaviour.
+6. Operational behaviour belongs in the repository — configuration, CI, Docker, documentation and future runbooks are part of the system.
+
+## Roadmap
+
+Milestone 1  Foundation
+Milestone 2  Durable Job API
+Milestone 3  Queue + Worker Runtime  ✓
+Milestone 4  Reliability + Recovery  ← in progress
+Milestone 5  Scheduling + Dependencies
+Milestone 6  Observability + Load Testing
+Milestone 7  Kubernetes + Production Operations
+
+ForgeQueue is intended to demonstrate real backend engineering: concurrency, transactions, distributed coordination, failure handling, API design, infrastructure and operational thinking.
+ -bench '^BenchmarkPostgresQueueClaimNext
+
+cmd/api/                 HTTP API and worker process
+internal/config/         environment configuration
+internal/database/       PostgreSQL connection pool
+internal/health/          liveness/readiness
+internal/httpserver/     HTTP routing and middleware
+internal/job/            domain model, service and REST API
+internal/queue/          queue abstraction and PostgreSQL implementation
+internal/worker/         worker runtime and handler registry
+db/init/                 local database schema
+docs/adr/                architecture decisions
+docs/CODE_REVIEW.md      engineering review notes
+
+## Engineering principles
+
+1. Durability before throughput — establish correct state transitions before optimising delivery.
+2. Database semantics should be explicit — queue behaviour uses PostgreSQL primitives rather than hiding delivery behind a framework.
+3. Workers must have ownership — a worker must prove that it owns a running job before acknowledging it.
+4. Concurrency should be testable — queue and execution behaviour are isolated behind interfaces.
+5. Failure is part of the design — retries, leases, dead letters and recovery are core system behaviour.
+6. Operational behaviour belongs in the repository — configuration, CI, Docker, documentation and future runbooks are part of the system.
+
+## Roadmap
+
+Milestone 1  Foundation
+Milestone 2  Durable Job API
+Milestone 3  Queue + Worker Runtime  ✓
+Milestone 4  Reliability + Recovery  ← in progress
+Milestone 5  Scheduling + Dependencies
+Milestone 6  Observability + Load Testing
+Milestone 7  Kubernetes + Production Operations
+
+ForgeQueue is intended to demonstrate real backend engineering: concurrency, transactions, distributed coordination, failure handling, API design, infrastructure and operational thinking.
+ -benchmem -benchtime=5s -cpu=1,4,16
+```
+
+The `-cpu` values compare parallel claimers under different `GOMAXPROCS` settings. Results are environment-dependent; record the Go version, PostgreSQL version, CPU, storage and actual output before publishing jobs/second figures. No throughput numbers are claimed until the benchmark has been run on a named environment.
+
 ## Project structure
 
 cmd/api/                 HTTP API and worker process
