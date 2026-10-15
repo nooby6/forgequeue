@@ -76,10 +76,20 @@ func (q *PostgresQueue) Complete(ctx context.Context, id, workerID string) error
 	if err != nil {
 		return fmt.Errorf("complete job: %w", err)
 	}
-	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("complete job: ownership lost")
+	if tag.RowsAffected() == 1 {
+		return nil
 	}
-	return nil
+
+	// A repeated acknowledgement is safe once the job is already terminal.
+	// Do not treat an expired running lease or a different terminal state as success.
+	var status string
+	if err := q.db.QueryRow(ctx, "SELECT status FROM jobs WHERE id=$1", id).Scan(&status); err != nil {
+		return fmt.Errorf("complete job: ownership lost: %w", err)
+	}
+	if status == "succeeded" {
+		return nil
+	}
+	return fmt.Errorf("complete job: ownership lost")
 }
 
 func (q *PostgresQueue) Fail(ctx context.Context, id, workerID string) error {
