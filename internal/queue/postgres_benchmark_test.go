@@ -32,7 +32,6 @@ func BenchmarkPostgresQueueClaimNext(b *testing.B) {
 
 	q := NewPostgresQueue(pool)
 	b.ReportAllocs()
-	b.SetBytes(1)
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
