@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func integrationPool(t *testing.T) *pgxpool.Pool {
+func integrationPool(t testing.TB) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
@@ -82,7 +82,7 @@ func integrationPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-func insertIntegrationJob(t *testing.T, pool *pgxpool.Pool, queueName string, attempts, maxAttempts int, status string, lease time.Time) string {
+func insertIntegrationJob(t testing.TB, pool *pgxpool.Pool, queueName string, attempts, maxAttempts int, status string, lease time.Time) string {
     t.Helper()
     ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
     defer cancel()
