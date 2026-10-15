@@ -104,12 +104,21 @@ func (q *PostgresQueue) Fail(ctx context.Context, id, workerID string) error {
 }
 
 func (q *PostgresQueue) Retry(ctx context.Context, id, workerID string, delay time.Duration) error {
-	tag, err := q.db.Exec(ctx, "UPDATE jobs SET status=CASE WHEN attempts < max_attempts THEN 'pending' ELSE 'failed' END,available_at=CASE WHEN attempts < max_attempts THEN NOW()+$3::interval ELSE available_at END,locked_by=NULL,locked_at=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE id=$1 AND status='running' AND locked_by=$2 AND lease_expires_at>NOW()", id, workerID, delay.String())
-	if err != nil {
-		return fmt.Errorf("retry job: %w", err)
+	tx, err := q.db.Begin(ctx)
+	if err != nil { return fmt.Errorf("begin retry transaction: %w", err) }
+	defer tx.Rollback(ctx)
+
+	var status, queueName, jobType string
+	var payload []byte
+	var attempts, maxAttempts int
+	err = tx.QueryRow(ctx, "UPDATE jobs SET status=CASE WHEN attempts < max_attempts THEN 'pending' ELSE 'failed' END, available_at=CASE WHEN attempts < max_attempts THEN NOW()+$3::interval ELSE available_at END, locked_by=NULL,locked_at=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE id=$1 AND status='running' AND locked_by=$2 AND lease_expires_at>NOW() RETURNING status,queue_name,job_type,payload,attempts,max_attempts", id, workerID, delay.String()).Scan(&status, &queueName, &jobType, &payload, &attempts, &maxAttempts)
+	if errors.Is(err, pgx.ErrNoRows) { return fmt.Errorf("retry job: ownership lost") }
+	if err != nil { return fmt.Errorf("retry job: %w", err) }
+
+	if status == "failed" {
+		_, err = tx.Exec(ctx, "INSERT INTO dead_letter_jobs (job_id,queue_name,job_type,payload,attempts,max_attempts,failure_reason,failed_at,replayed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),NULL) ON CONFLICT (job_id) DO UPDATE SET queue_name=EXCLUDED.queue_name,job_type=EXCLUDED.job_type,payload=EXCLUDED.payload,attempts=EXCLUDED.attempts,max_attempts=EXCLUDED.max_attempts,failure_reason=EXCLUDED.failure_reason,failed_at=NOW(),replayed_at=NULL", id, queueName, jobType, payload, attempts, maxAttempts, fmt.Sprintf("maximum attempts exhausted after %d attempts", attempts))
+		if err != nil { return fmt.Errorf("record dead-letter job: %w", err) }
 	}
-	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("retry job: ownership lost")
-	}
+	if err := tx.Commit(ctx); err != nil { return fmt.Errorf("commit job retry: %w", err) }
 	return nil
 }
