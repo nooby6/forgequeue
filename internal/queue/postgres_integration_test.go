@@ -275,3 +275,50 @@ func TestPostgresQueueCompleteIsIdempotent(t *testing.T) {
 		t.Fatalf("repeated completion should be idempotent: %v", err)
 	}
 }
+
+
+func TestPostgresQueueDeadLetterCanBeInspectedAndReplayed(t *testing.T) {
+	pool := integrationPool(t)
+	queueName := fmt.Sprintf("dead-letter-%d", time.Now().UnixNano())
+	id := insertIntegrationJob(t, pool, queueName, 3, 3, "running", time.Now().Add(time.Minute))
+	q := NewPostgresQueue(pool)
+
+	if err := q.Retry(context.Background(), id, "old-worker", time.Second); err != nil {
+		t.Fatalf("exhausted retry: %v", err)
+	}
+	letters, err := q.ListDeadLetters(context.Background(), queueName, 10)
+	if err != nil {
+		t.Fatalf("list dead letters: %v", err)
+	}
+	if len(letters) != 1 {
+		t.Fatalf("dead letters = %d, expected 1", len(letters))
+	}
+	if letters[0].JobID != id || letters[0].Attempts != 3 {
+		t.Fatalf("unexpected dead letter: %+v", letters[0])
+	}
+	if letters[0].FailureReason != "maximum attempts exhausted after 3 attempts" {
+		t.Fatalf("unexpected failure reason: %q", letters[0].FailureReason)
+	}
+
+	if err := q.ReplayDeadLetter(context.Background(), id); err != nil {
+		t.Fatalf("replay dead letter: %v", err)
+	}
+	var status string
+	var attempts int
+	if err := pool.QueryRow(context.Background(), "SELECT status,attempts FROM jobs WHERE id=$1", id).Scan(&status, &attempts); err != nil {
+		t.Fatalf("read replayed job: %v", err)
+	}
+	if status != "pending" || attempts != 0 {
+		t.Fatalf("replayed job status=%q attempts=%d, expected pending/0", status, attempts)
+	}
+	letters, err = q.ListDeadLetters(context.Background(), queueName, 10)
+	if err != nil {
+		t.Fatalf("list active dead letters after replay: %v", err)
+	}
+	if len(letters) != 0 {
+		t.Fatalf("active dead letters after replay = %d, expected 0", len(letters))
+	}
+	if err := q.ReplayDeadLetter(context.Background(), id); err == nil {
+		t.Fatal("replayed the same dead-letter record twice")
+	}
+}
