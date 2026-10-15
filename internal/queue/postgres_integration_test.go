@@ -322,3 +322,32 @@ func TestPostgresQueueDeadLetterCanBeInspectedAndReplayed(t *testing.T) {
 		t.Fatal("replayed the same dead-letter record twice")
 	}
 }
+
+
+func TestPostgresQueueDeadLettersExpiredLeaseAfterMaximumAttempts(t *testing.T) {
+	pool := integrationPool(t)
+	queueName := fmt.Sprintf("expired-exhausted-%d", time.Now().UnixNano())
+	id := insertIntegrationJob(t, pool, queueName, 3, 3, "running", time.Now().Add(-time.Minute))
+	q := NewPostgresQueue(pool)
+
+	if _, err := q.ClaimNext(context.Background(), queueName, "replacement-worker", time.Minute); err != ErrNoJob {
+		t.Fatalf("claim result = %v, expected no claim for exhausted expired job", err)
+	}
+	var status string
+	if err := pool.QueryRow(context.Background(), "SELECT status FROM jobs WHERE id=$1", id).Scan(&status); err != nil {
+		t.Fatalf("read exhausted job status: %v", err)
+	}
+	if status != "failed" {
+		t.Fatalf("status = %q, expected failed", status)
+	}
+	letters, err := q.ListDeadLetters(context.Background(), queueName, 10)
+	if err != nil {
+		t.Fatalf("list dead letters: %v", err)
+	}
+	if len(letters) != 1 || letters[0].JobID != id {
+		t.Fatalf("dead letters = %+v, expected one record for %s", letters, id)
+	}
+	if letters[0].FailureReason != "lease expired after maximum attempts" {
+		t.Fatalf("failure reason = %q", letters[0].FailureReason)
+	}
+}
