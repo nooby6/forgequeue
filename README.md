@@ -6,7 +6,7 @@ This is deliberately more than a CRUD API. The project is being built from first
 
 ## Current status
 
-**Milestone 3 — Queue + Worker Runtime**
+**Milestone 4 — Reliability and Recovery (in progress)**
 
 ### Completed
 - Go 1.23 backend
@@ -28,18 +28,20 @@ This is deliberately more than a CRUD API. The project is being built from first
 - Handler registry by job type
 - Explicit succeeded/failed transitions
 - Worker runtime tests
+- PostgreSQL integration test proving concurrent workers do not double-claim jobs
+- Expired-lease recovery and attempt-count increment
+- Automatic retries with capped exponential backoff
+- Per-job maximum attempts; exhausted jobs transition to `failed`
+- Lease renewal for long-running handlers (PR in review)
+- Completion, failure and retry operations require an active, unexpired lease (PR in review)
 
-### Next milestones
+### Remaining work
 
 **Milestone 4 — Reliability**
-- lease expiry recovery
-- automatic retries
-- exponential backoff
-- configurable per-job max attempts
-- maximum attempt policies
-- dead-letter queues
-- cancellation semantics
-- idempotent completion
+- Dedicated dead-letter handling and inspection/replay policy
+- Explicit cancellation semantics
+- Idempotent completion semantics and tests
+- Failure-injection coverage for database outages and worker restarts
 
 **Milestone 5 — Scheduling**
 - delayed jobs
@@ -112,7 +114,7 @@ pending → running → succeeded
                  ↘ pending → running → ...
                     ↘ failed
 
-A running job is owned by a worker through locked_by and protected by a lease timestamp. Expired-lease recovery is deliberately reserved for Milestone 4 so the failure semantics can be implemented and tested properly.
+A running job is owned by a worker through `locked_by` and protected by `lease_expires_at`. When a worker claims from a queue, expired running jobs in that queue are returned to `pending` before the next claim. The worker increments `attempts` on each claim; retry delays use capped exponential backoff, and jobs that exhaust `max_attempts` transition to `failed`. The lease-renewal and post-expiry ownership guards are currently under review in [PR #6](https://github.com/nooby6/forgequeue/pull/6).
 
 ## Run locally
 
@@ -174,8 +176,8 @@ docs/CODE_REVIEW.md      engineering review notes
 
 Milestone 1  Foundation
 Milestone 2  Durable Job API
-Milestone 3  Queue + Worker Runtime  ← current
-Milestone 4  Reliability + Recovery
+Milestone 3  Queue + Worker Runtime  ✓
+Milestone 4  Reliability + Recovery  ← in progress
 Milestone 5  Scheduling + Dependencies
 Milestone 6  Observability + Load Testing
 Milestone 7  Kubernetes + Production Operations
