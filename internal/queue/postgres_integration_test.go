@@ -70,6 +70,7 @@ func integrationPool(t testing.TB) *pgxpool.Pool {
 		"../../db/migrations/000001_initial_schema.up.sql",
 		"../../db/migrations/000002_worker_leases.up.sql",
 		"../../db/migrations/000003_retries.up.sql",
+		"../../db/migrations/000004_dead_letter_jobs.up.sql",
 	} {
 		sql, err := os.ReadFile(path)
 		if err != nil {
