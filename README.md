@@ -22,7 +22,6 @@ Implemented:
 - CI against PostgreSQL
 
 Remaining in Milestone 4:
-- Dead-letter inspection and replay policy
 - Explicit cancellation semantics
 - Failure-injection tests for database outages and worker restarts
 
@@ -38,7 +37,8 @@ Workers claim jobs in a database transaction. PostgreSQL row locking prevents tw
 - Each claim increments the attempt count.
 - Expired running jobs are recovered when a worker next claims from that queue.
 - Failed handlers are retried with capped exponential backoff until `max_attempts` is reached.
-- Exhausted jobs become `failed`; a dedicated dead-letter inspection/replay workflow remains future work.
+- Exhausted jobs become `failed` and are recorded in `dead_letter_jobs` in the same transaction.
+- `ListDeadLetters` lists unreplayed failures; `ReplayDeadLetter` requeues one job, resets its attempt counter, and retains the audit record. If it exhausts attempts again, the existing record is refreshed.
 
 ## Run locally
 
@@ -95,7 +95,7 @@ The `-cpu` values compare parallel claimers under different `GOMAXPROCS` setting
 - `internal/health/` — liveness and readiness
 - `internal/httpserver/` — HTTP routing and middleware
 - `internal/job/` — job domain, service, repository, and REST API
-- `internal/queue/` — queue abstraction, PostgreSQL implementation, integration tests, and benchmark
+- `internal/queue/` — PostgreSQL queue, dead-letter inspection/replay, integration tests, and benchmark
 - `internal/worker/` — worker runtime and handler registry
 - `db/` — database schema and migrations
 - `docs/` — architecture decisions and code-review notes
