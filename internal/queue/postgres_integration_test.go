@@ -357,17 +357,22 @@ func installDeadLetterFailureTrigger(t testing.TB, pool *pgxpool.Pool) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(), `
 		CREATE FUNCTION reject_dead_letter_insert() RETURNS trigger
-		LANGUAGE plpgsql AS $$
+		LANGUAGE plpgsql AS $
 		BEGIN
 			RAISE EXCEPTION 'injected dead-letter storage failure';
 		END;
-		$$;
-		CREATE TRIGGER reject_dead_letter_insert
-		BEFORE INSERT ON dead_letter_jobs
-		FOR EACH ROW EXECUTE FUNCTION reject_dead_letter_insert();
+		$
 	`)
 	if err != nil {
-		t.Fatalf("install dead-letter failure injection: %v", err)
+		t.Fatalf("create dead-letter failure function: %v", err)
+	}
+	_, err = pool.Exec(context.Background(), `
+		CREATE TRIGGER reject_dead_letter_insert
+		BEFORE INSERT ON dead_letter_jobs
+		FOR EACH ROW EXECUTE FUNCTION reject_dead_letter_insert()
+	`)
+	if err != nil {
+		t.Fatalf("create dead-letter failure trigger: %v", err)
 	}
 }
 
