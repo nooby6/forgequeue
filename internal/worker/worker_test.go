@@ -21,17 +21,20 @@ type fakeQueue struct {
 	completed  int
 	failed     int
 	retried    int
-	renewals   int
-	retryDelay time.Duration
+	renewals         int
+	claimWorkerIDs   []string
+	completeWorkerIDs []string
+	retryDelay        time.Duration
 	renewErr   error
 	onRetry    func()
 	onRenew    func()
 }
 
-func (f *fakeQueue) ClaimNext(context.Context, string, string, time.Duration) (job.Job, error) {
+func (f *fakeQueue) ClaimNext(_ context.Context, _ string, workerID string, _ time.Duration) (job.Job, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.claims++
+	f.claimWorkerIDs = append(f.claimWorkerIDs, workerID)
 	if f.claimed {
 		return job.Job{}, queue.ErrNoJob
 	}
@@ -51,10 +54,11 @@ func (f *fakeQueue) RenewLease(context.Context, string, string, time.Duration) e
 	return err
 }
 
-func (f *fakeQueue) Complete(context.Context, string, string) error {
+func (f *fakeQueue) Complete(_ context.Context, _ string, workerID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.completed++
+	f.completeWorkerIDs = append(f.completeWorkerIDs, workerID)
 	return nil
 }
 
@@ -108,6 +112,15 @@ func TestWorkerProcessesJob(t *testing.T) {
 	}
 	if fq.failed != 0 {
 		t.Fatalf("expected 0 failed jobs, got %d", fq.failed)
+	}
+	if len(fq.claimWorkerIDs) != 1 || len(fq.completeWorkerIDs) != 1 {
+		t.Fatalf("expected one claim and completion identity, got claims=%v completions=%v", fq.claimWorkerIDs, fq.completeWorkerIDs)
+	}
+	if fq.claimWorkerIDs[0] == "" || fq.claimWorkerIDs[0] != fq.completeWorkerIDs[0] {
+		t.Fatalf("claim and completion must use the same non-empty lease identity: claims=%v completions=%v", fq.claimWorkerIDs, fq.completeWorkerIDs)
+	}
+	if fq.claimWorkerIDs[0] == "test-worker" {
+		t.Fatal("lease identity must include an instance and slot identity, not only the configured worker name")
 	}
 }
 
@@ -308,5 +321,36 @@ func TestRetryDelayCapsAt24Hours(t *testing.T) {
 	w := New(&fakeQueue{}, NewRegistry(), slog.Default(), Config{RetryBackoff: 2 * time.Hour})
 	if got := w.retryDelay(20); got != 24*time.Hour {
 		t.Fatalf("expected 24h cap, got %s", got)
+	}
+}
+
+
+func TestWorkerLeaseIdentitiesAreUniquePerSlotAndInstance(t *testing.T) {
+	newWorker := func() *Worker {
+		return New(&fakeQueue{}, NewRegistry(), slog.Default(), Config{
+			QueueName: "default",
+			Concurrency: 2,
+			WorkerID: "shared-hostname",
+		})
+	}
+
+	firstInstance := newWorker()
+	secondInstance := newWorker()
+	identities := []string{
+		firstInstance.workerIdentity(0),
+		firstInstance.workerIdentity(1),
+		secondInstance.workerIdentity(0),
+		secondInstance.workerIdentity(1),
+	}
+
+	seen := make(map[string]struct{}, len(identities))
+	for _, identity := range identities {
+		if identity == "" {
+			t.Fatal("worker lease identity must not be empty")
+		}
+		if _, exists := seen[identity]; exists {
+			t.Fatalf("lease identity %q was reused across slots or instances", identity)
+		}
+		seen[identity] = struct{}{}
 	}
 }

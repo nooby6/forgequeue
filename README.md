@@ -29,7 +29,7 @@ Remaining in Milestone 4:
 
 Client → HTTP API → Job service → PostgreSQL → Queue runtime → Worker pool → Handler
 
-Workers claim jobs in a database transaction. PostgreSQL row locking prevents two workers from claiming the same pending row. Leases provide a time-bounded ownership window; a worker cannot renew or acknowledge a job after that lease expires.
+Workers claim jobs in a database transaction. PostgreSQL row locking prevents two workers from claiming the same pending row. Leases provide a time-bounded ownership window; a worker cannot renew or acknowledge a job after that lease expires. Lease ownership IDs include a random process-instance token and a worker-slot number, so a restarted process or another slot on the same host cannot accidentally reuse an old owner's identity.
 
 ## Queue behaviour
 
