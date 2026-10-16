@@ -351,3 +351,88 @@ func TestPostgresQueueDeadLettersExpiredLeaseAfterMaximumAttempts(t *testing.T) 
 		t.Fatalf("failure reason = %q", letters[0].FailureReason)
 	}
 }
+
+
+func installDeadLetterFailureTrigger(t testing.TB, pool *pgxpool.Pool) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(), "CREATE FUNCTION reject_dead_letter_insert() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RAISE EXCEPTION ''injected dead-letter storage failure''; RETURN NEW; END;'")
+	if err != nil {
+		t.Fatalf("create dead-letter failure function: %v", err)
+	}
+	_, err = pool.Exec(context.Background(), `CREATE TRIGGER reject_dead_letter_insert BEFORE INSERT ON dead_letter_jobs FOR EACH ROW EXECUTE FUNCTION reject_dead_letter_insert()`)
+	if err != nil {
+		t.Fatalf("create dead-letter failure trigger: %v", err)
+	}
+}
+
+func TestPostgresQueueRetryRollsBackWhenDeadLetterWriteFails(t *testing.T) {
+	pool := integrationPool(t)
+	queueName := fmt.Sprintf("retry-dead-letter-failure-%d", time.Now().UnixNano())
+	id := insertIntegrationJob(t, pool, queueName, 3, 3, "running", time.Now().Add(time.Minute))
+	installDeadLetterFailureTrigger(t, pool)
+
+	q := NewPostgresQueue(pool)
+	if err := q.Retry(context.Background(), id, "old-worker", time.Second); err == nil {
+		t.Fatal("expected injected dead-letter insert failure")
+	}
+
+	var status string
+	var lockedBy *string
+	if err := pool.QueryRow(
+		context.Background(),
+		"SELECT status, locked_by FROM jobs WHERE id=$1",
+		id,
+	).Scan(&status, &lockedBy); err != nil {
+		t.Fatalf("read job after injected failure: %v", err)
+	}
+	if status != "running" {
+		t.Fatalf("status = %q after rollback, expected running", status)
+	}
+	if lockedBy == nil || *lockedBy != "old-worker" {
+		t.Fatalf("locked_by = %v after rollback, expected old-worker", lockedBy)
+	}
+
+	letters, err := q.ListDeadLetters(context.Background(), queueName, 10)
+	if err != nil {
+		t.Fatalf("list dead letters after rollback: %v", err)
+	}
+	if len(letters) != 0 {
+		t.Fatalf("dead letters after rollback = %d, expected 0", len(letters))
+	}
+}
+
+func TestPostgresQueueClaimRollsBackExpiredLeaseRecoveryWhenDeadLetterWriteFails(t *testing.T) {
+	pool := integrationPool(t)
+	queueName := fmt.Sprintf("claim-dead-letter-failure-%d", time.Now().UnixNano())
+	id := insertIntegrationJob(t, pool, queueName, 3, 3, "running", time.Now().Add(-time.Minute))
+	installDeadLetterFailureTrigger(t, pool)
+
+	q := NewPostgresQueue(pool)
+	if _, err := q.ClaimNext(context.Background(), queueName, "replacement-worker", time.Minute); err == nil {
+		t.Fatal("expected injected dead-letter insert failure")
+	}
+
+	var status string
+	var lockedBy *string
+	if err := pool.QueryRow(
+		context.Background(),
+		"SELECT status, locked_by FROM jobs WHERE id=$1",
+		id,
+	).Scan(&status, &lockedBy); err != nil {
+		t.Fatalf("read expired job after injected failure: %v", err)
+	}
+	if status != "running" {
+		t.Fatalf("status = %q after rollback, expected running", status)
+	}
+	if lockedBy == nil || *lockedBy != "old-worker" {
+		t.Fatalf("locked_by = %v after rollback, expected old-worker", lockedBy)
+	}
+
+	letters, err := q.ListDeadLetters(context.Background(), queueName, 10)
+	if err != nil {
+		t.Fatalf("list dead letters after recovery rollback: %v", err)
+	}
+	if len(letters) != 0 {
+		t.Fatalf("dead letters after recovery rollback = %d, expected 0", len(letters))
+	}
+}
