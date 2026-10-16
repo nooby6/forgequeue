@@ -2,6 +2,8 @@ package worker
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -23,10 +25,11 @@ type Config struct {
 }
 
 type Worker struct {
-	queue    queue.Queue
-	registry *Registry
-	logger   *slog.Logger
-	config   Config
+	queue      queue.Queue
+	registry   *Registry
+	logger     *slog.Logger
+	config     Config
+	instanceID string
 }
 
 func New(q queue.Queue, r *Registry, l *slog.Logger, c Config) *Worker {
@@ -45,10 +48,35 @@ func New(q queue.Queue, r *Registry, l *slog.Logger, c Config) *Worker {
 	if c.ShutdownTimeout <= 0 {
 		c.ShutdownTimeout = 10 * time.Second
 	}
+	if c.WorkerID == "" {
+		c.WorkerID = "forgequeue-worker"
+	}
 	if l == nil {
 		l = slog.Default()
 	}
-	return &Worker{queue: q, registry: r, logger: l, config: c}
+	return &Worker{
+		queue:      q,
+		registry:   r,
+		logger:     l,
+		config:     c,
+		instanceID: newInstanceID(),
+	}
+}
+
+// newInstanceID gives every worker process a distinct identity, even when a
+// hostname is reused after a restart.
+func newInstanceID() string {
+	var bytes [16]byte
+	if _, err := rand.Read(bytes[:]); err == nil {
+		return hex.EncodeToString(bytes[:])
+	}
+	// Keep the identity unique enough for lease ownership if the system random
+	// source is unavailable. This fallback is not used during normal operation.
+	return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+}
+
+func (w *Worker) workerIdentity(slot int) string {
+	return fmt.Sprintf("%s/%s/%d", w.config.WorkerID, w.instanceID, slot)
 }
 
 // Run stops claiming jobs when ctx is canceled and gives active handlers up to
@@ -88,13 +116,14 @@ func (w *Worker) Run(ctx context.Context) {
 func (w *Worker) loop(ctx, workCtx context.Context, slot int) {
 	ticker := time.NewTicker(w.config.PollInterval)
 	defer ticker.Stop()
+	workerID := w.workerIdentity(slot)
 
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 
-		err := w.processOne(ctx, workCtx)
+		err := w.processOne(ctx, workCtx, workerID)
 		if err == queue.ErrNoJob {
 			select {
 			case <-ctx.Done():
@@ -105,7 +134,7 @@ func (w *Worker) loop(ctx, workCtx context.Context, slot int) {
 		}
 		if err != nil {
 			if ctx.Err() == nil {
-				w.logger.Error("worker_iteration_failed", "worker_id", w.config.WorkerID, "slot", slot, "error", err)
+				w.logger.Error("worker_iteration_failed", "worker_id", workerID, "slot", slot, "error", err)
 			}
 			select {
 			case <-ctx.Done():
@@ -119,15 +148,15 @@ func (w *Worker) loop(ctx, workCtx context.Context, slot int) {
 	}
 }
 
-func (w *Worker) processOne(ctx, workCtx context.Context) error {
-	j, err := w.queue.ClaimNext(ctx, w.config.QueueName, w.config.WorkerID, w.config.Lease)
+func (w *Worker) processOne(ctx, workCtx context.Context, workerID string) error {
+	j, err := w.queue.ClaimNext(ctx, w.config.QueueName, workerID, w.config.Lease)
 	if err != nil {
 		return err
 	}
 
 	h, ok := w.registry.Lookup(j.JobType)
 	if !ok {
-		if e := w.queue.Fail(workCtx, j.ID, w.config.WorkerID); e != nil {
+		if e := w.queue.Fail(workCtx, j.ID, workerID); e != nil {
 			return e
 		}
 		w.logger.Error("job_handler_missing", "job_id", j.ID, "job_type", j.JobType)
@@ -138,7 +167,7 @@ func (w *Worker) processOne(ctx, workCtx context.Context) error {
 	leaseLost := make(chan error, 1)
 	stopRenewal := make(chan struct{})
 	renewalDone := make(chan struct{})
-	go w.renewLeaseUntilStopped(j, handlerCtx, cancelHandler, stopRenewal, renewalDone, leaseLost)
+	go w.renewLeaseUntilStopped(j, workerID, handlerCtx, cancelHandler, stopRenewal, renewalDone, leaseLost)
 
 	handlerErr := h(handlerCtx, json.RawMessage(j.Payload))
 	close(stopRenewal)
@@ -156,21 +185,21 @@ func (w *Worker) processOne(ctx, workCtx context.Context) error {
 			return handlerErr
 		}
 		delay := w.retryDelay(j.Attempts)
-		if e := w.queue.Retry(workCtx, j.ID, w.config.WorkerID, delay); e != nil {
+		if e := w.queue.Retry(workCtx, j.ID, workerID, delay); e != nil {
 			return e
 		}
 		w.logger.Error("job_failed", "job_id", j.ID, "job_type", j.JobType, "attempt", j.Attempts, "retry_delay", delay.String(), "error", handlerErr)
 		return nil
 	}
 
-	if err = w.queue.Complete(workCtx, j.ID, w.config.WorkerID); err != nil {
+	if err = w.queue.Complete(workCtx, j.ID, workerID); err != nil {
 		return err
 	}
-	w.logger.Info("job_completed", "job_id", j.ID, "job_type", j.JobType, "worker_id", w.config.WorkerID)
+	w.logger.Info("job_completed", "job_id", j.ID, "job_type", j.JobType, "worker_id", workerID)
 	return nil
 }
 
-func (w *Worker) renewLeaseUntilStopped(j job.Job, handlerCtx context.Context, cancelHandler context.CancelFunc, stop <-chan struct{}, done chan<- struct{}, leaseLost chan<- error) {
+func (w *Worker) renewLeaseUntilStopped(j job.Job, workerID string, handlerCtx context.Context, cancelHandler context.CancelFunc, stop <-chan struct{}, done chan<- struct{}, leaseLost chan<- error) {
 	defer close(done)
 	interval := w.config.Lease / 3
 	if interval <= 0 {
@@ -185,7 +214,7 @@ func (w *Worker) renewLeaseUntilStopped(j job.Job, handlerCtx context.Context, c
 			return
 		case <-ticker.C:
 			renewCtx, cancel := context.WithTimeout(context.Background(), interval)
-			err := w.queue.RenewLease(renewCtx, j.ID, w.config.WorkerID, w.config.Lease)
+			err := w.queue.RenewLease(renewCtx, j.ID, workerID, w.config.Lease)
 			cancel()
 			if err != nil {
 				select {
