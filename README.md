@@ -23,7 +23,7 @@ Implemented:
 
 Remaining in Milestone 4:
 - Explicit cancellation semantics
-- Failure-injection tests for database outages and worker restarts
+- End-to-end process-restart testing with a running worker and a deliberately interrupted handler
 
 ## Architecture
 
