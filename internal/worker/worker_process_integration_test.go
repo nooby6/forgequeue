@@ -57,7 +57,6 @@ func TestWorkerRecoversJobAfterAbruptProcessExit(t *testing.T) {
 	admin, err := pgx.Connect(ctx, dsn)
 	if err != nil { t.Fatal(err) }
 	schema := fmt.Sprintf("worker_process_test_%d", time.Now().UnixNano())
-	if _, err := admin.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public"); err != nil { t.Fatal(err) }
 	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil { t.Fatal(err) }
 	if err := admin.Close(ctx); err != nil { t.Fatal(err) }
 	t.Cleanup(func() {
@@ -78,7 +77,8 @@ func TestWorkerRecoversJobAfterAbruptProcessExit(t *testing.T) {
 	}
 	queueName := fmt.Sprintf("process-recovery-%d", time.Now().UnixNano())
 	var id string
-	if err := pool.QueryRow(ctx, "INSERT INTO jobs (idempotency_key,queue_name,job_type,payload,status,max_attempts,available_at) VALUES (gen_random_uuid()::text,$1,'process-recovery-test','{}','pending',3,NOW()) RETURNING id::text", queueName).Scan(&id); err != nil { t.Fatal(err) }
+	idempotencyKey := fmt.Sprintf("process-recovery-key-%d", time.Now().UnixNano())
+	if err := pool.QueryRow(ctx, "INSERT INTO jobs (idempotency_key,queue_name,job_type,payload,status,max_attempts,available_at) VALUES ($1,$2,'process-recovery-test','{}','pending',3,NOW()) RETURNING id::text", idempotencyKey, queueName).Scan(&id); err != nil { t.Fatal(err) }
 	dir := t.TempDir()
 	firstMarker := filepath.Join(dir,"first")
 	first := exec.Command(os.Args[0], "-test.run=^TestWorkerProcessHelper$")
