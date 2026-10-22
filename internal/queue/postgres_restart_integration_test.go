@@ -51,7 +51,7 @@ func TestPostgresQueueRecoversJobAfterWorkerRestart(t *testing.T) {
 		t.Fatalf("recovered attempts = %d; want 2", recovered.Attempts)
 	}
 
-	if err := q.Complete(ctx, id, firstWorkerIdentity(first.ID, "worker-instance-before-restart/slot-0")); err == nil {
+	if err := q.Complete(ctx, id, "worker-instance-before-restart/slot-0"); err == nil {
 		t.Fatal("stale worker completed a job after replacement claimed it")
 	}
 	if err := q.Complete(ctx, id, replacementID); err != nil {
@@ -77,6 +77,3 @@ func TestPostgresQueueRecoversJobAfterWorkerRestart(t *testing.T) {
 	}
 }
 
-// firstWorkerIdentity keeps the stale owner explicit in the assertion above.
-// The job ID is accepted to make the call site read as a worker/job pair.
-func firstWorkerIdentity(_ string, identity string) string { return identity }
