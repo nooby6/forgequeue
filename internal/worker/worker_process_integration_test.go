@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -72,8 +73,17 @@ func TestWorkerRecoversJobAfterAbruptProcessExit(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	defer pool.Close()
 	for _, path := range []string{"../../db/migrations/000001_initial_schema.up.sql","../../db/migrations/000002_worker_leases.up.sql","../../db/migrations/000003_retries.up.sql","../../db/migrations/000004_dead_letter_jobs.up.sql"} {
-		sql, e := os.ReadFile(path); if e != nil { t.Fatal(e) }
-		if _, e = pool.Exec(ctx, string(sql)); e != nil { t.Fatalf("migration %s: %v", path, e) }
+		sql, e := os.ReadFile(path)
+		if e != nil {
+			t.Fatal(e)
+		}
+		// gen_random_uuid() is built into supported PostgreSQL versions. Skip
+		// the database-global extension DDL here because other integration tests
+		// may initialize pgcrypto concurrently in the same test database.
+		migration := strings.ReplaceAll(string(sql), "CREATE EXTENSION IF NOT EXISTS pgcrypto;\n", "")
+		if _, e = pool.Exec(ctx, migration); e != nil {
+			t.Fatalf("migration %s: %v", path, e)
+		}
 	}
 	queueName := fmt.Sprintf("process-recovery-%d", time.Now().UnixNano())
 	var id string
