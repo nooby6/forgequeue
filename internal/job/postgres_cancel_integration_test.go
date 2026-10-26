@@ -24,9 +24,20 @@ func TestPostgresRepositoryCancelPendingJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect to test database: %v", err)
 	}
+	// Serialize extension initialization with the queue package's integration tests.
+	const extensionLock int64 = 748392615
+	if _, err := admin.Exec(ctx, "SELECT pg_advisory_lock($1)", extensionLock); err != nil {
+		_ = admin.Close(ctx)
+		t.Fatalf("lock pgcrypto initialization: %v", err)
+	}
 	if _, err := admin.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public"); err != nil {
+		_, _ = admin.Exec(ctx, "SELECT pg_advisory_unlock($1)", extensionLock)
 		_ = admin.Close(ctx)
 		t.Fatalf("ensure pgcrypto extension: %v", err)
+	}
+	if _, err := admin.Exec(ctx, "SELECT pg_advisory_unlock($1)", extensionLock); err != nil {
+		_ = admin.Close(ctx)
+		t.Fatalf("unlock pgcrypto initialization: %v", err)
 	}
 	schema := fmt.Sprintf("forgequeue_job_cancel_%d", time.Now().UnixNano())
 	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
