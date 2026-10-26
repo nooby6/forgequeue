@@ -77,6 +77,7 @@ func TestPostgresRepositoryCancelPendingJob(t *testing.T) {
 		"../../db/migrations/000002_worker_leases.up.sql",
 		"../../db/migrations/000003_retries.up.sql",
 		"../../db/migrations/000004_dead_letter_jobs.up.sql",
+		"../../db/migrations/000005_running_job_cancellation.up.sql",
 	} {
 		sql, err := os.ReadFile(path)
 		if err != nil {
@@ -128,8 +129,19 @@ func TestPostgresRepositoryCancelPendingJob(t *testing.T) {
 	if _, err := pool.Exec(ctx, "UPDATE jobs SET status='running',locked_by='worker-1',locked_at=NOW(),lease_expires_at=NOW()+INTERVAL '1 minute' WHERE id=$1", running.ID); err != nil {
 		t.Fatalf("mark job running: %v", err)
 	}
-	if _, err := repo.Cancel(ctx, running.ID); err != ErrNotCancellable {
-		t.Fatalf("cancel running job error = %v; want ErrNotCancellable", err)
+	requested, err := repo.Cancel(ctx, running.ID)
+	if err != nil {
+		t.Fatalf("request running-job cancellation: %v", err)
+	}
+	if requested.Status != StatusRunning || requested.CancellationRequestedAt == nil {
+		t.Fatalf("running cancellation should remain running with a request timestamp: %+v", requested)
+	}
+	repeatedRequest, err := repo.Cancel(ctx, running.ID)
+	if err != nil {
+		t.Fatalf("repeated running cancellation should be idempotent: %v", err)
+	}
+	if repeatedRequest.CancellationRequestedAt == nil || !repeatedRequest.CancellationRequestedAt.Equal(*requested.CancellationRequestedAt) {
+		t.Fatalf("repeated cancellation should preserve the original request timestamp: first=%v second=%v", requested.CancellationRequestedAt, repeatedRequest.CancellationRequestedAt)
 	}
 
 	if _, err := repo.Cancel(ctx, "00000000-0000-0000-0000-000000000000"); err != ErrNotFound {

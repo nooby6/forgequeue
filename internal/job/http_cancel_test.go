@@ -59,7 +59,7 @@ func TestCancelHandlerMapsMissingAndNonCancellableJobs(t *testing.T) {
 		wantBody   string
 	}{
 		{name: "missing", err: ErrNotFound, wantStatus: http.StatusNotFound, wantBody: "job not found"},
-		{name: "running", err: ErrNotCancellable, wantStatus: http.StatusConflict, wantBody: "job can only be cancelled while pending"},
+		{name: "running", err: ErrNotCancellable, wantStatus: http.StatusConflict, wantBody: "job cannot be cancelled in its current state"},
 	}
 
 	for _, tt := range tests {
