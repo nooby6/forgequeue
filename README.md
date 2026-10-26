@@ -19,6 +19,7 @@ Implemented:
 - Active-lease guards for completion, failure, and retry
 - Idempotent repeated successful completion
 - PostgreSQL integration tests for lease ownership and expiry
+- Queue statistics endpoint for operational visibility
 - CI against PostgreSQL
 
 Remaining in Milestone 4:
@@ -39,6 +40,36 @@ Workers claim jobs in a database transaction. PostgreSQL row locking prevents tw
 - Failed handlers are retried with capped exponential backoff until `max_attempts` is reached.
 - Exhausted jobs become `failed` and are recorded in `dead_letter_jobs` in the same transaction.
 - `ListDeadLetters` lists unreplayed failures; `ReplayDeadLetter` requeues one job, resets its attempt counter, and retains the audit record. If it exhausts attempts again, the existing record is refreshed.
+- Queue statistics are computed by PostgreSQL aggregates and scoped to a single queue; the endpoint does not load individual job rows.
+
+## HTTP API
+
+### Queue statistics
+
+`GET /queues/{queueName}/stats` returns counts by job state, the count of unreplayed dead letters, and the creation time of the oldest pending job.
+
+Example:
+
+```sh
+curl http://localhost:8080/queues/default/stats
+```
+
+Example response:
+
+```json
+{
+  "queue_name": "default",
+  "pending": 4,
+  "running": 2,
+  "succeeded": 108,
+  "failed": 3,
+  "cancelled": 0,
+  "active_dead_letters": 3,
+  "oldest_pending_at": "2026-10-26T08:00:00Z"
+}
+```
+
+`oldest_pending_at` is `null` when no pending jobs exist. Counts are a point-in-time operational snapshot, not a transactional guarantee for subsequent requests.
 
 ## Run locally
 
@@ -95,7 +126,7 @@ The `-cpu` values compare parallel claimers under different `GOMAXPROCS` setting
 - `internal/health/` — liveness and readiness
 - `internal/httpserver/` — HTTP routing and middleware
 - `internal/job/` — job domain, service, repository, and REST API
-- `internal/queue/` — PostgreSQL queue, dead-letter inspection/replay, integration tests, and benchmark
+- `internal/queue/` — PostgreSQL queue, queue statistics, dead-letter inspection/replay, integration tests, and benchmark
 - `internal/worker/` — worker runtime and handler registry
 - `db/` — database schema and migrations
 - `docs/` — architecture decisions and code-review notes
@@ -116,5 +147,5 @@ The `-cpu` values compare parallel claimers under different `GOMAXPROCS` setting
 - **Milestone 3 — Queue + Worker Runtime:** complete
 - **Milestone 4 — Reliability + Recovery:** in progress
 - **Milestone 5 — Scheduling + Dependencies:** planned
-- **Milestone 6 — Observability + Load Testing:** planned
+- **Milestone 6 — Observability + Load Testing:** initial queue statistics endpoint added; broader metrics and load testing planned
 - **Milestone 7 — Infrastructure + Production Operations:** planned
