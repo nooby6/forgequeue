@@ -4,7 +4,7 @@ ForgeQueue is a Go and PostgreSQL job queue built to explore durable job executi
 
 ## Current status
 
-**Milestone 4 — Reliability and Recovery (in progress)**
+**Milestone 4 — Reliability and Recovery (final verification in progress)**
 
 Implemented:
 - Durable job submission and lookup API
@@ -19,11 +19,13 @@ Implemented:
 - Active-lease guards for completion, failure, and retry
 - Idempotent repeated successful completion
 - PostgreSQL integration tests for lease ownership and expiry
+- End-to-end process-restart integration test: terminate a worker while its handler is running, then verify a replacement worker recovers and completes the job
+- Explicit cancellation semantics for pending jobs, with idempotent repeated cancellation
+- Cancellation rejects running or otherwise terminal jobs with HTTP 409; missing jobs return HTTP 404
 - CI against PostgreSQL
 
 Remaining in Milestone 4:
-- Explicit cancellation semantics
-- End-to-end process-restart testing with a running worker and a deliberately interrupted handler
+- Verify cancellation and process-restart integration tests in CI; no implementation items are currently outstanding
 
 ## Architecture
 
@@ -56,6 +58,14 @@ Health checks:
 curl http://localhost:8080/health/live
 curl http://localhost:8080/health/ready
 ```
+
+Cancel a pending job (returns the job with `status: cancelled`; repeating the request is safe):
+
+```sh
+curl -X DELETE http://localhost:8080/jobs/JOB_ID
+```
+
+A running job cannot be cancelled through this endpoint because the current worker contract does not support cooperative cancellation. Such requests return HTTP 409 rather than pretending that execution was interrupted.
 
 Submit a job:
 
@@ -114,7 +124,7 @@ The `-cpu` values compare parallel claimers under different `GOMAXPROCS` setting
 - **Milestone 1 — Foundation:** complete
 - **Milestone 2 — Durable Job API:** complete
 - **Milestone 3 — Queue + Worker Runtime:** complete
-- **Milestone 4 — Reliability + Recovery:** in progress
+- **Milestone 4 — Reliability + Recovery:** final CI verification in progress
 - **Milestone 5 — Scheduling + Dependencies:** planned
 - **Milestone 6 — Observability + Load Testing:** planned
 - **Milestone 7 — Infrastructure + Production Operations:** planned
