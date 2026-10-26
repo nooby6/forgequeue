@@ -70,11 +70,15 @@ func (q *PostgresQueue) Complete(ctx context.Context, id, workerID string) error
 
 	var status string
 	var requestedAt *time.Time
-	if err := q.db.QueryRow(ctx, "SELECT status,cancellation_requested_at FROM jobs WHERE id=$1 AND locked_by=$2", id, workerID).Scan(&status, &requestedAt); err != nil {
+	var lockedBy *string
+	if err := q.db.QueryRow(ctx, "SELECT status,cancellation_requested_at,locked_by FROM jobs WHERE id=$1", id).Scan(&status, &requestedAt, &lockedBy); err != nil {
 		return fmt.Errorf("complete job: ownership lost: %w", err)
 	}
-	if status == "running" && requestedAt != nil { return ErrCancellationRequested }
+	// Successful completion is idempotent even though it cleared locked_by.
 	if status == "succeeded" { return nil }
+	if status == "running" && lockedBy != nil && *lockedBy == workerID && requestedAt != nil {
+		return ErrCancellationRequested
+	}
 	return fmt.Errorf("complete job: ownership lost")
 }
 
