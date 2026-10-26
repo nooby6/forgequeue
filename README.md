@@ -21,7 +21,7 @@ Implemented:
 - PostgreSQL integration tests for lease ownership and expiry
 - End-to-end process-restart integration test: terminate a worker while its handler is running, then verify a replacement worker recovers and completes the job
 - Explicit cancellation semantics for pending jobs, with idempotent repeated cancellation
-- Cancellation rejects running or otherwise terminal jobs with HTTP 409; missing jobs return HTTP 404
+- Cancellation rejects running, succeeded, or failed jobs with HTTP 409; repeated cancellation of an already-cancelled job is idempotent; missing jobs return HTTP 404
 - CI against PostgreSQL
 
 Remaining in Milestone 4:
