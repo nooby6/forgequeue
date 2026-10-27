@@ -16,6 +16,7 @@ func New(addr string, hh *health.Handler, jh *job.Handler, qh *queue.StatsHandle
 	mux.HandleFunc("GET /health/ready", hh.Ready)
 	mux.HandleFunc("POST /jobs", jh.Create)
 	mux.HandleFunc("GET /jobs/{id}", jh.Get)
+	mux.HandleFunc("DELETE /jobs/{id}", jh.Cancel)
 	mux.HandleFunc("GET /queues/{queueName}/stats", qh.Get)
 	return &http.Server{Addr: addr, Handler: loggingMiddleware(l, mux), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 }
