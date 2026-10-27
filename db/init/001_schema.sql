@@ -13,11 +13,15 @@ CREATE TABLE IF NOT EXISTS jobs (
  locked_by TEXT,
  locked_at TIMESTAMPTZ,
  lease_expires_at TIMESTAMPTZ,
+ cancellation_requested_at TIMESTAMPTZ,
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_queue_status_available ON jobs(queue_name,status,available_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_lease_expiry ON jobs(status,lease_expires_at) WHERE status='running';
+CREATE INDEX IF NOT EXISTS idx_jobs_cancellation_requested
+ ON jobs(queue_name,cancellation_requested_at)
+ WHERE status='running' AND cancellation_requested_at IS NOT NULL;
 CREATE TABLE IF NOT EXISTS dead_letter_jobs (
  job_id UUID PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
  queue_name TEXT NOT NULL,

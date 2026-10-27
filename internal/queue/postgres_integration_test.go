@@ -26,9 +26,20 @@ func integrationPool(t testing.TB) *pgxpool.Pool {
 	if err != nil {
 		t.Fatalf("connect to database for test schema: %v", err)
 	}
+	// Serialize extension initialization across package-level test processes.
+	const extensionLock int64 = 748392615
+	if _, err := admin.Exec(ctx, "SELECT pg_advisory_lock($1)", extensionLock); err != nil {
+		_ = admin.Close(ctx)
+		t.Fatalf("lock pgcrypto initialization: %v", err)
+	}
 	if _, err := admin.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public"); err != nil {
-		admin.Close(ctx)
+		_, _ = admin.Exec(ctx, "SELECT pg_advisory_unlock($1)", extensionLock)
+		_ = admin.Close(ctx)
 		t.Fatalf("ensure pgcrypto extension: %v", err)
+	}
+	if _, err := admin.Exec(ctx, "SELECT pg_advisory_unlock($1)", extensionLock); err != nil {
+		_ = admin.Close(ctx)
+		t.Fatalf("unlock pgcrypto initialization: %v", err)
 	}
 	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
 		admin.Close(ctx)
@@ -71,6 +82,7 @@ func integrationPool(t testing.TB) *pgxpool.Pool {
 		"../../db/migrations/000002_worker_leases.up.sql",
 		"../../db/migrations/000003_retries.up.sql",
 		"../../db/migrations/000004_dead_letter_jobs.up.sql",
+		"../../db/migrations/000005_running_job_cancellation.up.sql",
 	} {
 		sql, err := os.ReadFile(path)
 		if err != nil {

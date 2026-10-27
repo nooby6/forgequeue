@@ -1,3 +1,3 @@
 package job
 import "context"
-type Repository interface{Create(context.Context,CreateRequest)(Job,error);Get(context.Context,string)(Job,error)}
+type Repository interface{Create(context.Context,CreateRequest)(Job,error);Get(context.Context,string)(Job,error);Cancel(context.Context,string)(Job,error)}
