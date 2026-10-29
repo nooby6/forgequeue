@@ -448,3 +448,36 @@ func TestPostgresQueueClaimRollsBackExpiredLeaseRecoveryWhenDeadLetterWriteFails
 		t.Fatalf("dead letters after recovery rollback = %d, expected 0", len(letters))
 	}
 }
+
+
+func TestPostgresQueueDoesNotClaimScheduledJobEarly(t *testing.T) {
+	pool := integrationPool(t)
+	ctx := context.Background()
+	queueName := fmt.Sprintf("scheduled-%d", time.Now().UnixNano())
+	runAt := time.Now().Add(2 * time.Minute).UTC()
+	var id string
+	err := pool.QueryRow(ctx, `
+		INSERT INTO jobs (idempotency_key, queue_name, job_type, payload, status, priority, max_attempts, available_at)
+		VALUES (gen_random_uuid()::text, $1, 'scheduled-test', '{}', 'pending', 0, 3, $2)
+		RETURNING id
+	`, queueName, runAt).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert scheduled job: %v", err)
+	}
+
+	q := NewPostgresQueue(pool)
+	if _, err := q.ClaimNext(ctx, queueName, "early-worker", time.Minute); err != ErrNoJob {
+		t.Fatalf("claim before scheduled time returned %v; want ErrNoJob", err)
+	}
+
+	if _, err := pool.Exec(ctx, "UPDATE jobs SET available_at=NOW() WHERE id=$1", id); err != nil {
+		t.Fatalf("make scheduled job ready: %v", err)
+	}
+	claimed, err := q.ClaimNext(ctx, queueName, "ready-worker", time.Minute)
+	if err != nil {
+		t.Fatalf("claim job after it becomes available: %v", err)
+	}
+	if claimed.ID != id {
+		t.Fatalf("claimed job %s; want %s", claimed.ID, id)
+	}
+}
