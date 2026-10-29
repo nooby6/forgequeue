@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestPostgresRepositoryCancelPendingJob(t *testing.T) {
+func TestPostgresRepositorySchedulingAndCancellation(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL is not set")
@@ -142,6 +142,25 @@ func TestPostgresRepositoryCancelPendingJob(t *testing.T) {
 	}
 	if repeatedRequest.CancellationRequestedAt == nil || !repeatedRequest.CancellationRequestedAt.Equal(*requested.CancellationRequestedAt) {
 		t.Fatalf("repeated cancellation should preserve the original request timestamp: first=%v second=%v", requested.CancellationRequestedAt, repeatedRequest.CancellationRequestedAt)
+	}
+
+	runAt := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Microsecond)
+	scheduled, err := repo.Create(ctx, CreateRequest{
+		IdempotencyKey: fmt.Sprintf("scheduled-job-%d", time.Now().UnixNano()),
+		QueueName:      "scheduled-test",
+		JobType:        "report",
+		Payload:        []byte(`{"kind":"daily"}`),
+		MaxAttempts:    3,
+		ScheduledAt:    &runAt,
+	})
+	if err != nil {
+		t.Fatalf("create scheduled job: %v", err)
+	}
+	if !scheduled.AvailableAt.Equal(runAt) {
+		t.Fatalf("available_at = %s; want scheduled time %s", scheduled.AvailableAt, runAt)
+	}
+	if scheduled.Status != StatusPending {
+		t.Fatalf("scheduled job status = %q; want pending", scheduled.Status)
 	}
 
 	if _, err := repo.Cancel(ctx, "00000000-0000-0000-0000-000000000000"); err != ErrNotFound {

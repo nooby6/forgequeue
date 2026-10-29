@@ -1,36 +1,40 @@
 # ForgeQueue
 
-ForgeQueue is a Go and PostgreSQL job queue focused on durable execution, concurrent workers, lease ownership, retries, cancellation, and failure recovery.
+ForgeQueue is a Go and PostgreSQL job queue focused on durable execution, concurrent workers, lease ownership, retries, scheduling, cancellation, and failure recovery.
 
 ## Current status
 
-**Milestone 4 — Reliability and Recovery (verification in progress)**
+**Milestone 5 — Scheduling (in progress)**
 
 Implemented:
 - Durable job submission and lookup API with idempotency keys
+- One-time scheduled jobs using an RFC 3339 `scheduled_at` timestamp
+- PostgreSQL-backed readiness times; scheduled jobs remain pending and cannot be claimed before their availability time
 - Transactional job claiming with `FOR UPDATE SKIP LOCKED`
 - Worker identity, execution leases, and lease renewal
 - Expired-lease recovery and attempt-count increments
 - Exponential retry backoff and maximum-attempt exhaustion
 - Dead-letter inspection and replay
 - Graceful worker shutdown
-- Safe cancellation of pending jobs
-- Cooperative cancellation requests for running jobs
-- PostgreSQL integration tests for concurrency, lease ownership, cancellation, and recovery
+- Safe cancellation of pending jobs and cooperative cancellation of running jobs
+- PostgreSQL integration tests for concurrency, lease ownership, cancellation, scheduling, and recovery
 - CI against PostgreSQL
 
 ## Architecture
 
 Client → HTTP API → Job service → PostgreSQL → Queue runtime → Worker pool → Handler
 
-Workers claim jobs in a database transaction. PostgreSQL row locking prevents two workers from claiming the same pending row. Leases provide time-bounded ownership; a worker cannot renew or acknowledge a job after its lease expires. Lease identities include a random process-instance token and a worker-slot number so restarted processes and concurrent slots do not reuse an owner identity.
+Workers claim jobs in a database transaction. PostgreSQL row locking prevents two workers from claiming the same pending row. Leases provide time-bounded ownership; a worker cannot renew or acknowledge a job after that lease expires. Lease identities include a random process-instance token and a worker-slot number so restarted processes and concurrent slots do not reuse an owner identity.
 
-## Job lifecycle and cancellation
+## Job lifecycle and scheduling
 
 - Jobs are selected by queue, readiness time, and priority.
+- Jobs submitted without `scheduled_at` become available immediately.
+- A future `scheduled_at` timestamp is persisted as `available_at`; the worker's existing database claim query ignores the job until that timestamp has passed. No in-memory timer or separate scheduler process is required.
+- Timestamps must be RFC 3339, for example `2027-02-03T12:30:00Z`. A timestamp in the past is treated as immediately eligible.
 - Each claim increments the attempt count.
 - Failed handlers are retried with capped exponential backoff until `max_attempts` is reached.
-- Exhausted jobs become `failed` and are recorded in `dead_letter_jobs`.
+- Exhausted jobs become `failed` and are recorded as dead letters.
 - Expired running jobs are recovered when a worker next claims from that queue.
 - Pending jobs can be cancelled immediately.
 - A running job receives a durable `cancellation_requested_at` timestamp. Its handler context is cancelled on the next lease-renewal check.
@@ -39,7 +43,7 @@ Workers claim jobs in a database transaction. PostgreSQL row locking prevents tw
 
 ## HTTP API
 
-### Submit a job
+### Submit an immediate job
 
 ```sh
 curl -X POST http://localhost:8080/jobs \
@@ -47,6 +51,19 @@ curl -X POST http://localhost:8080/jobs \
   -H 'Idempotency-Key: noop-001' \
   -d '{"queue_name":"default","job_type":"noop","payload":{"message":"hello ForgeQueue"},"priority":10}'
 ```
+
+### Schedule a job
+
+Use `scheduled_at` as an RFC 3339 timestamp. The job is persisted immediately but cannot be claimed by a worker before its availability time.
+
+```sh
+curl -X POST http://localhost:8080/jobs \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: daily-report-2027-02-03' \
+  -d '{"queue_name":"default","job_type":"noop","payload":{"message":"scheduled report"},"scheduled_at":"2027-02-03T12:30:00Z"}'
+```
+
+The response's `available_at` field confirms the persisted time. Omitting `scheduled_at` keeps the previous immediate-execution behaviour. Reusing an idempotency key returns the existing job and does not reschedule it.
 
 ### Retrieve a job
 
@@ -127,7 +144,7 @@ Publish benchmark numbers only alongside the environment and exact command used.
 - **Milestone 1 — Foundation:** complete
 - **Milestone 2 — Durable Job API:** complete
 - **Milestone 3 — Queue + Worker Runtime:** complete
-- **Milestone 4 — Reliability + Recovery:** final CI verification in progress
-- **Milestone 5 — Scheduling + Dependencies:** planned
+- **Milestone 4 — Reliability + Recovery:** complete
+- **Milestone 5 — Scheduling + Dependencies:** in progress; one-time scheduling implemented, recurring schedules and dependency graphs remain planned
 - **Milestone 6 — Observability + Load Testing:** planned
 - **Milestone 7 — Infrastructure + Production Operations:** planned
