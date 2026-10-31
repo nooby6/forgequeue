@@ -39,4 +39,5 @@ type CreateRequest struct {
 	MaxAttempts int `json:"max_attempts"`
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
+	DependsOn []string `json:"depends_on,omitempty"`
 }

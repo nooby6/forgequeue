@@ -4,11 +4,12 @@ ForgeQueue is a Go and PostgreSQL job queue focused on durable execution, concur
 
 ## Current status
 
-**Milestone 5 — Scheduling (in progress)**
+**Milestone 5 — Scheduling + Dependencies (in progress)**
 
 Implemented:
 - Durable job submission and lookup API with idempotency keys
 - One-time scheduled jobs using an RFC 3339 `scheduled_at` timestamp
+- Durable job dependencies: workers wait for all prerequisites to succeed; dependents are cancelled if a prerequisite fails or is cancelled
 - PostgreSQL-backed readiness times; scheduled jobs remain pending and cannot be claimed before their availability time
 - Transactional job claiming with `FOR UPDATE SKIP LOCKED`
 - Worker identity, execution leases, and lease renewal
@@ -65,7 +66,7 @@ curl -X POST http://localhost:8080/jobs \
 
 The response's `available_at` field confirms the persisted time. Omitting `scheduled_at` keeps the previous immediate-execution behaviour. Reusing an idempotency key returns the existing job and does not reschedule it.
 
-### Retrieve a job
+### Submit a job with dependencies\n\nPass existing job IDs in `depends_on`. The job is persisted immediately, but workers will not claim it until every prerequisite has succeeded. Dependencies are committed atomically with the job. Reusing an idempotency key does not change the original dependency graph. If any prerequisite fails or is cancelled, the dependent is marked cancelled during the next claim attempt for its queue.\n\n```sh\ncurl -X POST http://localhost:8080/jobs \\\n  -H 'Content-Type: application/json' \\\n  -d '{"queue_name":"default","job_type":"publish-report","payload":{"report_id":"rpt-42"},"depends_on":["PREPARATION_JOB_ID","EXPORT_JOB_ID"]}'\n```\n\n### Retrieve a job
 
 ```sh
 curl http://localhost:8080/jobs/JOB_ID
@@ -145,6 +146,6 @@ Publish benchmark numbers only alongside the environment and exact command used.
 - **Milestone 2 — Durable Job API:** complete
 - **Milestone 3 — Queue + Worker Runtime:** complete
 - **Milestone 4 — Reliability + Recovery:** complete
-- **Milestone 5 — Scheduling + Dependencies:** in progress; one-time scheduling implemented, recurring schedules and dependency graphs remain planned
+- **Milestone 5 — Scheduling + Dependencies:** in progress; one-time scheduling and dependency gating implemented; recurring schedules remain planned
 - **Milestone 6 — Observability + Load Testing:** planned
 - **Milestone 7 — Infrastructure + Production Operations:** planned

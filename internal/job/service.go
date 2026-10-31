@@ -20,6 +20,14 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (Job, error) {
 	if req.Priority < -100 || req.Priority > 100 { return Job{}, errors.New("priority must be between -100 and 100") }
 	if req.MaxAttempts == 0 { req.MaxAttempts = 3 }
 	if req.MaxAttempts < 1 || req.MaxAttempts > 20 { return Job{}, errors.New("max_attempts must be between 1 and 20") }
+	seenDependencies := make(map[string]struct{}, len(req.DependsOn))
+	for i, id := range req.DependsOn {
+		id = strings.TrimSpace(id)
+		if id == "" { return Job{}, errors.New("depends_on entries must be non-empty job IDs") }
+		if _, exists := seenDependencies[id]; exists { return Job{}, errors.New("depends_on must not contain duplicate job IDs") }
+		seenDependencies[id] = struct{}{}
+		req.DependsOn[i] = id
+	}
 	return s.repo.Create(ctx, req)
 }
 

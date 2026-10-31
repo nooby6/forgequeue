@@ -83,6 +83,7 @@ func integrationPool(t testing.TB) *pgxpool.Pool {
 		"../../db/migrations/000003_retries.up.sql",
 		"../../db/migrations/000004_dead_letter_jobs.up.sql",
 		"../../db/migrations/000005_running_job_cancellation.up.sql",
+		"../../db/migrations/000006_job_dependencies.up.sql",
 	} {
 		sql, err := os.ReadFile(path)
 		if err != nil {
@@ -480,4 +481,28 @@ func TestPostgresQueueDoesNotClaimScheduledJobEarly(t *testing.T) {
 	if claimed.ID != id {
 		t.Fatalf("claimed job %s; want %s", claimed.ID, id)
 	}
+}
+
+
+func TestPostgresQueueWaitsForDependencies(t *testing.T) {
+ pool:=integrationPool(t);ctx:=context.Background();queueName:=fmt.Sprintf("deps-%d",time.Now().UnixNano())
+ prerequisite:=insertIntegrationJob(t,pool,queueName,0,3,"pending",time.Time{})
+ dependent:=insertIntegrationJob(t,pool,queueName,0,3,"pending",time.Time{})
+ if _,err:=pool.Exec(ctx,"INSERT INTO job_dependencies(job_id,depends_on_job_id) VALUES($1,$2)",dependent,prerequisite);err!=nil{t.Fatal(err)}
+ q:=NewPostgresQueue(pool);claimed,err:=q.ClaimNext(ctx,queueName,"worker",time.Minute)
+ if err!=nil||claimed.ID!=prerequisite{t.Fatalf("first claim = %v, %v; want prerequisite %s",claimed,err,prerequisite)}
+ if _,err:=q.ClaimNext(ctx,queueName,"worker-2",time.Minute);err!=ErrNoJob{t.Fatalf("claim with unresolved prerequisite = %v; want ErrNoJob",err)}
+ if err:=q.Complete(ctx,prerequisite,"worker");err!=nil{t.Fatal(err)}
+ claimed,err=q.ClaimNext(ctx,queueName,"worker-2",time.Minute)
+ if err!=nil||claimed.ID!=dependent{t.Fatalf("claim after prerequisite = %v, %v; want dependent %s",claimed,err,dependent)}
+}
+
+func TestPostgresQueueCancelsJobsWithFailedDependencies(t *testing.T) {
+ pool:=integrationPool(t);ctx:=context.Background();queueName:=fmt.Sprintf("failed-deps-%d",time.Now().UnixNano())
+ prerequisite:=insertIntegrationJob(t,pool,queueName,0,3,"failed",time.Time{})
+ dependent:=insertIntegrationJob(t,pool,queueName,0,3,"pending",time.Time{})
+ if _,err:=pool.Exec(ctx,"INSERT INTO job_dependencies(job_id,depends_on_job_id) VALUES($1,$2)",dependent,prerequisite);err!=nil{t.Fatal(err)}
+ q:=NewPostgresQueue(pool);if _,err:=q.ClaimNext(ctx,queueName,"worker",time.Minute);err!=ErrNoJob{t.Fatalf("claim = %v; want ErrNoJob",err)}
+ var status string;if err:=pool.QueryRow(ctx,"SELECT status FROM jobs WHERE id=$1",dependent).Scan(&status);err!=nil{t.Fatal(err)}
+ if status!="cancelled"{t.Fatalf("dependent status = %q; want cancelled",status)}
 }
