@@ -35,8 +35,19 @@ func (q *PostgresQueue) ClaimNext(ctx context.Context, queueName, workerID strin
 	_, err = tx.Exec(ctx, "WITH exhausted AS (UPDATE jobs SET status='failed',locked_by=NULL,locked_at=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE queue_name=$1 AND status='running' AND cancellation_requested_at IS NULL AND lease_expires_at<=NOW() AND attempts>=max_attempts RETURNING id,queue_name,job_type,payload,attempts,max_attempts) INSERT INTO dead_letter_jobs (job_id,queue_name,job_type,payload,attempts,max_attempts,failure_reason,failed_at,replayed_at) SELECT id,queue_name,job_type,payload,attempts,max_attempts,'lease expired after maximum attempts',NOW(),NULL FROM exhausted ON CONFLICT (job_id) DO UPDATE SET queue_name=EXCLUDED.queue_name,job_type=EXCLUDED.job_type,payload=EXCLUDED.payload,attempts=EXCLUDED.attempts,max_attempts=EXCLUDED.max_attempts,failure_reason=EXCLUDED.failure_reason,failed_at=NOW(),replayed_at=NULL", queueName)
 	if err != nil { return job.Job{}, fmt.Errorf("dead-letter expired jobs: %w", err) }
 
+	_, err = tx.Exec(ctx, `UPDATE jobs AS candidate SET status='cancelled',updated_at=NOW()
+		WHERE candidate.queue_name=$1 AND candidate.status='pending'
+		AND EXISTS (SELECT 1 FROM job_dependencies d JOIN jobs prerequisite ON prerequisite.id=d.depends_on_job_id
+		WHERE d.job_id=candidate.id AND prerequisite.status IN ('failed','cancelled'))`, queueName)
+	if err != nil { return job.Job{}, fmt.Errorf("cancel jobs with failed prerequisites: %w", err) }
+
 	var id string
-	err = tx.QueryRow(ctx, "SELECT id FROM jobs WHERE queue_name=$1 AND status='pending' AND available_at<=NOW() ORDER BY priority DESC,available_at ASC,created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1", queueName).Scan(&id)
+	err = tx.QueryRow(ctx, `SELECT candidate.id FROM jobs AS candidate
+		WHERE candidate.queue_name=$1 AND candidate.status='pending' AND candidate.available_at<=NOW()
+		AND NOT EXISTS (SELECT 1 FROM job_dependencies d JOIN jobs prerequisite ON prerequisite.id=d.depends_on_job_id
+		WHERE d.job_id=candidate.id AND prerequisite.status <> 'succeeded')
+		ORDER BY candidate.priority DESC,candidate.available_at ASC,candidate.created_at ASC
+		FOR UPDATE OF candidate SKIP LOCKED LIMIT 1`, queueName).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if err := tx.Commit(ctx); err != nil { return job.Job{}, fmt.Errorf("commit lease recovery: %w", err) }
 		return job.Job{}, ErrNoJob
