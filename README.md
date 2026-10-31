@@ -18,7 +18,11 @@ Implemented:
 - Dead-letter inspection and replay
 - Graceful worker shutdown
 - Safe cancellation of pending jobs and cooperative cancellation of running jobs
+- Lease renewal for long-running handlers
+- Active-lease guards for completion, failure, and retry
+- Idempotent repeated successful completion
 - PostgreSQL integration tests for concurrency, lease ownership, cancellation, scheduling, and recovery
+- Queue statistics endpoint for operational visibility
 - CI against PostgreSQL
 
 ## Architecture
@@ -41,6 +45,8 @@ Workers claim jobs in a database transaction. PostgreSQL row locking prevents tw
 - A running job receives a durable `cancellation_requested_at` timestamp. Its handler context is cancelled on the next lease-renewal check.
 - The worker marks a running job `cancelled` only after the handler returns and the worker acknowledges cancellation. If the worker dies first, the queue finalizes the cancellation after the lease expires.
 - Cancellation is cooperative: handlers must observe `ctx.Done()` and stop their work. ForgeQueue does not forcibly terminate goroutines or roll back external side effects already performed by a handler.
+- `ListDeadLetters` lists unreplayed failures; `ReplayDeadLetter` requeues one job, resets its attempt counter, and retains the audit record. If it exhausts attempts again, the existing record is refreshed.
+- Queue statistics are computed by PostgreSQL aggregates and scoped to a single queue; the endpoint does not load individual job rows.
 
 ## HTTP API
 
@@ -79,6 +85,33 @@ curl -X DELETE http://localhost:8080/jobs/JOB_ID
 ```
 
 For a pending job, the response has `status: cancelled`. For a running job, the response remains `status: running` and includes `cancellation_requested_at` while the handler responds to cancellation. Repeated requests are safe. A missing job returns HTTP 404; a terminal non-cancelled job returns HTTP 409.
+
+### Queue statistics
+
+`GET /queues/{queueName}/stats` returns counts by job state, the count of unreplayed dead letters, and the creation time of the oldest pending job.
+
+Example:
+
+```sh
+curl http://localhost:8080/queues/default/stats
+```
+
+Example response:
+
+```json
+{
+  "queue_name": "default",
+  "pending": 4,
+  "running": 2,
+  "succeeded": 108,
+  "failed": 3,
+  "cancelled": 0,
+  "active_dead_letters": 3,
+  "oldest_pending_at": "2026-10-26T08:00:00Z"
+}
+```
+
+`oldest_pending_at` is `null` when no pending jobs exist. Counts are a point-in-time operational snapshot, not a transactional guarantee for subsequent requests.
 
 ## Run locally
 
@@ -126,7 +159,7 @@ Publish benchmark numbers only alongside the environment and exact command used.
 - `internal/health/` — liveness and readiness
 - `internal/httpserver/` — HTTP routing and middleware
 - `internal/job/` — job domain, service, repository, and REST API
-- `internal/queue/` — PostgreSQL queue, dead-letter inspection/replay, integration tests, and benchmark
+- `internal/queue/` — PostgreSQL queue, queue statistics, dead-letter inspection/replay, integration tests, and benchmark
 - `internal/worker/` — worker runtime and handler registry
 - `db/` — database schema and migrations
 - `docs/` — architecture decisions and code-review notes
@@ -147,5 +180,5 @@ Publish benchmark numbers only alongside the environment and exact command used.
 - **Milestone 3 — Queue + Worker Runtime:** complete
 - **Milestone 4 — Reliability + Recovery:** complete
 - **Milestone 5 — Scheduling + Dependencies:** in progress; one-time scheduling and dependency gating implemented; recurring schedules remain planned
-- **Milestone 6 — Observability + Load Testing:** planned
+- **Milestone 6 — Observability + Load Testing:** initial queue statistics endpoint added; broader metrics and load testing planned
 - **Milestone 7 — Infrastructure + Production Operations:** planned

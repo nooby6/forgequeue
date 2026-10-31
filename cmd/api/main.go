@@ -34,7 +34,14 @@ func main() {
 	defer db.Close()
 
 	repo := job.NewPostgresRepository(db)
-	server := httpserver.New(cfg.Addr, &health.Handler{DB: db}, job.NewHandler(job.NewService(repo)), logger)
+	queueRuntime := queue.NewPostgresQueue(db)
+	server := httpserver.New(
+		cfg.Addr,
+		&health.Handler{DB: db},
+		job.NewHandler(job.NewService(repo)),
+		queue.NewStatsHandler(queueRuntime),
+		logger,
+	)
 
 	registry := worker.NewRegistry()
 	if err := registry.Register("noop", func(ctx context.Context, payload json.RawMessage) error {
@@ -50,7 +57,6 @@ func main() {
 		workerID = "forgequeue-worker"
 	}
 
-	queueRuntime := queue.NewPostgresQueue(db)
 	jobWorker := worker.New(queueRuntime, registry, logger, worker.Config{
 		QueueName:       cfg.WorkerQueue,
 		Concurrency:     cfg.WorkerConcurrency,
@@ -85,8 +91,6 @@ func main() {
 		logger.Error("server_shutdown_failed", "error", err)
 	}
 
-	// Run applies its own bounded grace period to active jobs. Wait for it
-	// before closing the shared database pool.
 	select {
 	case <-workerDone:
 	case <-time.After(cfg.WorkerShutdownTimeout + time.Second):
