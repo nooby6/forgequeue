@@ -101,6 +101,9 @@ func TestPostgresRepositoryCancelPendingJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create pending job: %v", err)
 	}
+	if !pending.AvailableAt.Equal(scheduledAt) {
+		t.Fatalf("available_at = %s; want %s", pending.AvailableAt, scheduledAt)
+	}
 
 	cancelled, err := repo.Cancel(ctx, pending.ID)
 	if err != nil {
