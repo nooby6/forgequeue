@@ -25,8 +25,8 @@ func scanJob(row pgx.Row) (Job, error) {
 }
 
 func (r *PostgresRepository) Create(ctx context.Context, req CreateRequest) (Job, error) {
-	q := "INSERT INTO jobs(idempotency_key,queue_name,job_type,payload,status,priority,max_attempts) VALUES($1,$2,$3,$4,'pending',$5,$6) ON CONFLICT(idempotency_key) DO UPDATE SET idempotency_key=EXCLUDED.idempotency_key RETURNING " + jobColumns
-	return scanJob(r.db.QueryRow(ctx, q, req.IdempotencyKey, req.QueueName, req.JobType, req.Payload, req.Priority, req.MaxAttempts))
+	q := "INSERT INTO jobs(idempotency_key,queue_name,job_type,payload,status,priority,max_attempts,available_at) VALUES($1,$2,$3,$4,'pending',$5,$6,COALESCE($7::timestamptz,NOW())) ON CONFLICT(idempotency_key) DO UPDATE SET idempotency_key=EXCLUDED.idempotency_key RETURNING " + jobColumns
+	return scanJob(r.db.QueryRow(ctx, q, req.IdempotencyKey, req.QueueName, req.JobType, req.Payload, req.Priority, req.MaxAttempts, req.AvailableAt))
 }
 
 func (r *PostgresRepository) Cancel(ctx context.Context, id string) (Job, error) {
