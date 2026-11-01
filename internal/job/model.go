@@ -38,4 +38,5 @@ type CreateRequest struct {
 	Priority       int             `json:"priority"`
 	MaxAttempts    int             `json:"max_attempts"`
 	IdempotencyKey string          `json:"idempotency_key,omitempty"`
+	AvailableAt    *time.Time      `json:"available_at,omitempty"`
 }
