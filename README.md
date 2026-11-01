@@ -8,6 +8,7 @@ ForgeQueue is a Go and PostgreSQL job queue focused on durable execution, concur
 
 Implemented:
 - Durable job submission and lookup API with idempotency keys
+- Scheduled job availability using an optional `available_at` timestamp
 - Transactional job claiming with `FOR UPDATE SKIP LOCKED`
 - Worker identity, execution leases, and lease renewal
 - Expired-lease recovery and attempt-count increments
@@ -52,6 +53,16 @@ curl -X POST http://localhost:8080/jobs \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: noop-001' \
   -d '{"queue_name":"default","job_type":"noop","payload":{"message":"hello ForgeQueue"},"priority":10}'
+```
+
+### Schedule a job
+
+Include `available_at` when submitting a job to make it ineligible for workers until that timestamp. The value must be an RFC 3339 timestamp; omit it to make the job available immediately. The worker claim query enforces this timestamp in PostgreSQL.
+
+```sh
+curl -X POST http://localhost:8080/jobs \\
+  -H 'Content-Type: application/json' \\
+  -d '{"queue_name":"default","job_type":"report","payload":{},"available_at":"2026-11-02T09:00:00Z"}'
 ```
 
 ### Retrieve a job
@@ -161,6 +172,6 @@ Publish benchmark numbers only alongside the environment and exact command used.
 - **Milestone 2 — Durable Job API:** complete
 - **Milestone 3 — Queue + Worker Runtime:** complete
 - **Milestone 4 — Reliability + Recovery:** final CI verification in progress
-- **Milestone 5 — Scheduling + Dependencies:** planned
+- **Milestone 5 — Scheduling + Dependencies:** scheduled job availability implemented; job dependencies planned
 - **Milestone 6 — Observability + Load Testing:** initial queue statistics endpoint added; broader metrics and load testing planned
 - **Milestone 7 — Infrastructure + Production Operations:** planned
