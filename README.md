@@ -60,8 +60,8 @@ curl -X POST http://localhost:8080/jobs \
 Include `available_at` when submitting a job to make it ineligible for workers until that timestamp. The value must be an RFC 3339 timestamp; omit it to make the job available immediately. The worker claim query enforces this timestamp in PostgreSQL.
 
 ```sh
-curl -X POST http://localhost:8080/jobs \\
-  -H 'Content-Type: application/json' \\
+curl -X POST http://localhost:8080/jobs \
+  -H 'Content-Type: application/json' \
   -d '{"queue_name":"default","job_type":"report","payload":{},"available_at":"2026-11-02T09:00:00Z"}'
 ```
 
