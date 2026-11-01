@@ -89,12 +89,14 @@ func TestPostgresRepositoryCancelPendingJob(t *testing.T) {
 	}
 
 	repo := NewPostgresRepository(pool)
+	scheduledAt := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Microsecond)
 	pending, err := repo.Create(ctx, CreateRequest{
 		IdempotencyKey: fmt.Sprintf("cancel-pending-%d", time.Now().UnixNano()),
 		QueueName:      "cancel-test",
 		JobType:        "test",
 		Payload:        []byte(`{}`),
 		MaxAttempts:    3,
+		AvailableAt:    &scheduledAt,
 	})
 	if err != nil {
 		t.Fatalf("create pending job: %v", err)
