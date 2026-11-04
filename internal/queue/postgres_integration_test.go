@@ -2,6 +2,7 @@ package queue
 
 import (
     "context"
+    "errors"
     "fmt"
     "os"
     "sync"
@@ -9,6 +10,7 @@ import (
     "time"
 
     "github.com/jackc/pgx/v5"
+    "github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -83,6 +85,8 @@ func integrationPool(t testing.TB) *pgxpool.Pool {
 		"../../db/migrations/000003_retries.up.sql",
 		"../../db/migrations/000004_dead_letter_jobs.up.sql",
 		"../../db/migrations/000005_running_job_cancellation.up.sql",
+		"../../db/migrations/000006_job_dependencies.up.sql",
+        "../../db/migrations/000007_job_dependency_cycles.up.sql",
 	} {
 		sql, err := os.ReadFile(path)
 		if err != nil {
@@ -447,4 +451,131 @@ func TestPostgresQueueClaimRollsBackExpiredLeaseRecoveryWhenDeadLetterWriteFails
 	if len(letters) != 0 {
 		t.Fatalf("dead letters after recovery rollback = %d, expected 0", len(letters))
 	}
+}
+
+
+func TestPostgresQueueDoesNotClaimScheduledJobEarly(t *testing.T) {
+	pool := integrationPool(t)
+	ctx := context.Background()
+	queueName := fmt.Sprintf("scheduled-%d", time.Now().UnixNano())
+	runAt := time.Now().Add(2 * time.Minute).UTC()
+	var id string
+	err := pool.QueryRow(ctx, `
+		INSERT INTO jobs (idempotency_key, queue_name, job_type, payload, status, priority, max_attempts, available_at)
+		VALUES (gen_random_uuid()::text, $1, 'scheduled-test', '{}', 'pending', 0, 3, $2)
+		RETURNING id
+	`, queueName, runAt).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert scheduled job: %v", err)
+	}
+
+	q := NewPostgresQueue(pool)
+	if _, err := q.ClaimNext(ctx, queueName, "early-worker", time.Minute); err != ErrNoJob {
+		t.Fatalf("claim before scheduled time returned %v; want ErrNoJob", err)
+	}
+
+	if _, err := pool.Exec(ctx, "UPDATE jobs SET available_at=NOW() WHERE id=$1", id); err != nil {
+		t.Fatalf("make scheduled job ready: %v", err)
+	}
+	claimed, err := q.ClaimNext(ctx, queueName, "ready-worker", time.Minute)
+	if err != nil {
+		t.Fatalf("claim job after it becomes available: %v", err)
+	}
+	if claimed.ID != id {
+		t.Fatalf("claimed job %s; want %s", claimed.ID, id)
+	}
+}
+
+
+func TestPostgresQueueWaitsForDependencies(t *testing.T) {
+ pool:=integrationPool(t);ctx:=context.Background();queueName:=fmt.Sprintf("deps-%d",time.Now().UnixNano())
+ prerequisite:=insertIntegrationJob(t,pool,queueName,0,3,"pending",time.Time{})
+ dependent:=insertIntegrationJob(t,pool,queueName,0,3,"pending",time.Time{})
+ if _,err:=pool.Exec(ctx,"INSERT INTO job_dependencies(job_id,depends_on_job_id) VALUES($1,$2)",dependent,prerequisite);err!=nil{t.Fatal(err)}
+ q:=NewPostgresQueue(pool);claimed,err:=q.ClaimNext(ctx,queueName,"worker",time.Minute)
+ if err!=nil||claimed.ID!=prerequisite{t.Fatalf("first claim = %v, %v; want prerequisite %s",claimed,err,prerequisite)}
+ if _,err:=q.ClaimNext(ctx,queueName,"worker-2",time.Minute);err!=ErrNoJob{t.Fatalf("claim with unresolved prerequisite = %v; want ErrNoJob",err)}
+ if err:=q.Complete(ctx,prerequisite,"worker");err!=nil{t.Fatal(err)}
+ claimed,err=q.ClaimNext(ctx,queueName,"worker-2",time.Minute)
+ if err!=nil||claimed.ID!=dependent{t.Fatalf("claim after prerequisite = %v, %v; want dependent %s",claimed,err,dependent)}
+}
+
+func TestPostgresQueueCancelsJobsWithFailedDependencies(t *testing.T) {
+ pool:=integrationPool(t);ctx:=context.Background();queueName:=fmt.Sprintf("failed-deps-%d",time.Now().UnixNano())
+ prerequisite:=insertIntegrationJob(t,pool,queueName,0,3,"failed",time.Time{})
+ dependent:=insertIntegrationJob(t,pool,queueName,0,3,"pending",time.Time{})
+ if _,err:=pool.Exec(ctx,"INSERT INTO job_dependencies(job_id,depends_on_job_id) VALUES($1,$2)",dependent,prerequisite);err!=nil{t.Fatal(err)}
+ q:=NewPostgresQueue(pool);if _,err:=q.ClaimNext(ctx,queueName,"worker",time.Minute);err!=ErrNoJob{t.Fatalf("claim = %v; want ErrNoJob",err)}
+ var status string;if err:=pool.QueryRow(ctx,"SELECT status FROM jobs WHERE id=$1",dependent).Scan(&status);err!=nil{t.Fatal(err)}
+ if status!="cancelled"{t.Fatalf("dependent status = %q; want cancelled",status)}
+}
+
+func TestPostgresRejectsDependencyCycles(t *testing.T) {
+    pool := integrationPool(t)
+    ctx := context.Background()
+    queueName := fmt.Sprintf("dependency-cycle-%d", time.Now().UnixNano())
+    first := insertIntegrationJob(t, pool, queueName, 0, 3, "pending", time.Time{})
+    second := insertIntegrationJob(t, pool, queueName, 0, 3, "pending", time.Time{})
+    third := insertIntegrationJob(t, pool, queueName, 0, 3, "pending", time.Time{})
+
+    for _, edge := range [][2]string{{first, second}, {second, third}} {
+        if _, err := pool.Exec(ctx, "INSERT INTO job_dependencies(job_id,depends_on_job_id) VALUES($1,$2)", edge[0], edge[1]); err != nil {
+            t.Fatalf("insert valid dependency %s -> %s: %v", edge[0], edge[1], err)
+        }
+    }
+
+    _, err := pool.Exec(ctx, "INSERT INTO job_dependencies(job_id,depends_on_job_id) VALUES($1,$2)", third, first)
+    var postgresError *pgconn.PgError
+    if !errors.As(err, &postgresError) {
+        t.Fatalf("cycle insert error = %v; want PostgreSQL constraint violation", err)
+    }
+    if postgresError.Code != "23514" || postgresError.ConstraintName != "job_dependencies_acyclic" {
+        t.Fatalf("cycle insert error = %s / %s; want 23514 / job_dependencies_acyclic", postgresError.Code, postgresError.ConstraintName)
+    }
+}
+
+func TestPostgresSerializesConcurrentOppositeDependencyEdges(t *testing.T) {
+    pool := integrationPool(t)
+    ctx := context.Background()
+    queueName := fmt.Sprintf("concurrent-dependency-cycle-%d", time.Now().UnixNano())
+    first := insertIntegrationJob(t, pool, queueName, 0, 3, "pending", time.Time{})
+    second := insertIntegrationJob(t, pool, queueName, 0, 3, "pending", time.Time{})
+
+    start := make(chan struct{})
+    type result struct { err error }
+    results := make(chan result, 2)
+    var workers sync.WaitGroup
+    for _, edge := range [][2]string{{first, second}, {second, first}} {
+        edge := edge
+        workers.Add(1)
+        go func() {
+            defer workers.Done()
+            <-start
+            _, err := pool.Exec(ctx, "INSERT INTO job_dependencies(job_id,depends_on_job_id) VALUES($1,$2)", edge[0], edge[1])
+            results <- result{err: err}
+        }()
+    }
+    close(start)
+    workers.Wait()
+    close(results)
+
+    successes := 0
+    cycleRejections := 0
+    for outcome := range results {
+        if outcome.err == nil {
+            successes++
+            continue
+        }
+        var postgresError *pgconn.PgError
+        if errors.As(outcome.err, &postgresError) &&
+            postgresError.Code == "23514" &&
+            postgresError.ConstraintName == "job_dependencies_acyclic" {
+            cycleRejections++
+            continue
+        }
+        t.Fatalf("unexpected dependency insert error: %v", outcome.err)
+    }
+    if successes != 1 || cycleRejections != 1 {
+        t.Fatalf("opposite edge results: successes=%d cycle_rejections=%d; want 1 and 1", successes, cycleRejections)
+    }
 }
