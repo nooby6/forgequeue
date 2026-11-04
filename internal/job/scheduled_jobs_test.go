@@ -91,3 +91,20 @@ func TestCreateHandlerRejectsInvalidScheduledAt(t *testing.T) {
 		t.Fatalf("repository should not be called for invalid timestamp")
 	}
 }
+
+func TestCreateHandlerRejectsDependencyCycle(t *testing.T) {
+    repo := &schedulingTestRepository{err: ErrDependencyCycle}
+    handler := NewHandler(NewService(repo))
+    body := `{"queue_name":"reports","job_type":"publish","payload":{},"depends_on":["prerequisite-id"]}`
+    request := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
+    response := httptest.NewRecorder()
+
+    handler.Create(response, request)
+
+    if response.Code != http.StatusConflict {
+        t.Fatalf("status = %d; want %d; body=%s", response.Code, http.StatusConflict, response.Body.String())
+    }
+    if !strings.Contains(response.Body.String(), ErrDependencyCycle.Error()) {
+        t.Fatalf("response does not explain the dependency conflict: %s", response.Body.String())
+    }
+}
