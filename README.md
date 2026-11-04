@@ -10,6 +10,7 @@ Implemented:
 - Durable job submission and lookup API with idempotency keys
 - One-time scheduled jobs using an RFC 3339 `scheduled_at` timestamp
 - Durable job dependencies: workers wait for all prerequisites to succeed; dependents are cancelled if a prerequisite fails or is cancelled
+- PostgreSQL recursive cycle detection rejects dependency graphs that would deadlock jobs, including concurrent opposite-edge inserts
 - PostgreSQL-backed readiness times; scheduled jobs remain pending and cannot be claimed before their availability time
 - Transactional job claiming with `FOR UPDATE SKIP LOCKED`
 - Worker identity, execution leases, and lease renewal
@@ -21,7 +22,7 @@ Implemented:
 - Lease renewal for long-running handlers
 - Active-lease guards for completion, failure, and retry
 - Idempotent repeated successful completion
-- PostgreSQL integration tests for concurrency, lease ownership, cancellation, scheduling, and recovery
+- PostgreSQL integration tests for concurrency, lease ownership, cancellation, scheduling, dependency gating, cycle prevention, and recovery
 - Queue statistics endpoint for operational visibility
 - CI against PostgreSQL
 
