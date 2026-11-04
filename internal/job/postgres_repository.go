@@ -10,6 +10,7 @@ import (
 
 var ErrNotFound = errors.New("job not found")
 var ErrNotCancellable = errors.New("job cannot be cancelled in its current state")
+var ErrDependencyCycle = errors.New("job dependencies must form an acyclic graph")
 type PostgresRepository struct { db *pgxpool.Pool }
 func NewPostgresRepository(db *pgxpool.Pool) *PostgresRepository { return &PostgresRepository{db:db} }
 const jobColumns = "id,idempotency_key,queue_name,job_type,payload,status,priority,attempts,max_attempts,available_at,cancellation_requested_at,created_at,updated_at"
@@ -24,7 +25,13 @@ func (r *PostgresRepository) Create(ctx context.Context, req CreateRequest) (Job
  if err!=nil{return Job{},fmt.Errorf("insert job: %w",err)}
  var inserted bool
  if req.IdempotencyKey!="" { if err:=tx.QueryRow(ctx,"SELECT (xmax = 0) FROM jobs WHERE id=$1",j.ID).Scan(&inserted);err!=nil{return Job{},fmt.Errorf("inspect idempotent create: %w",err)} } else {inserted=true}
- if inserted { for _,dependencyID:=range req.DependsOn { if _,err:=tx.Exec(ctx,"INSERT INTO job_dependencies(job_id,depends_on_job_id) VALUES($1,$2)",j.ID,dependencyID);err!=nil{return Job{},fmt.Errorf("add job dependency %s: %w",dependencyID,err)} } }
+ if inserted { for _,dependencyID:=range req.DependsOn { if _,err:=tx.Exec(ctx,"INSERT INTO job_dependencies(job_id,depends_on_job_id) VALUES($1,$2)",j.ID,dependencyID);err!=nil {
+        var postgresError *pgconn.PgError
+        if errors.As(err, &postgresError) && postgresError.Code == "23514" && postgresError.ConstraintName == "job_dependencies_acyclic" {
+            return Job{}, fmt.Errorf("%w", ErrDependencyCycle)
+        }
+        return Job{},fmt.Errorf("add job dependency %s: %w",dependencyID,err)
+    } } }
  if err:=tx.Commit(ctx);err!=nil{return Job{},fmt.Errorf("commit create job: %w",err)}
  return j,nil
 }
